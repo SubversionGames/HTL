@@ -400,6 +400,176 @@
             return minFontSizePx;
         };
 
+        // ───────────────────────────────────────────────────────────────────────────────
+        // Google Sheets parsers. These used to live inline inside fetchSheetsData; they were
+        // moved here, unchanged, so that the first load of the sheet AND the live "refresh
+        // questions" feature read the sheet in exactly the same way (one copy of the rules,
+        // so the two can never drift apart). Each takes the raw rows Google returns and gives
+        // back the same objects the game has always used.
+        // ───────────────────────────────────────────────────────────────────────────────
+
+        // MATCH tab rows (A2:F25) -> array of rounds
+        const parseMatchRows = (rows) => {
+            const rounds = [];
+            for (let i = 0; i < rows.length; i += 2) {
+                const row1 = rows[i] || [];
+                const row2 = rows[i + 1] || [];
+
+                if (row1.length < 5) continue; // Skip incomplete rows
+
+                rounds.push({
+                    category: row1[1] || '',      // Column B
+                    question1: row1[3] || '',     // Column D
+                    answer1: row1[4] || '',       // Column E
+                    imageUrl1: row1[5] || null,   // Column F (optional image for Q1)
+                    question2: row2[3] || '',     // Column D
+                    answer2: row2[4] || '',       // Column E
+                    imageUrl2: row2[5] || null    // Column F (optional image for Q2)
+                });
+            }
+            return rounds;
+        };
+
+        // CLOSEST TO tab rows (A2:C1000) -> array of questions (in sheet order, NOT shuffled -
+        // the caller shuffles on first load only, so a live refresh never re-orders the match)
+        const parseClosestToRows = (ctRows) => {
+            return ctRows
+                .filter(row => row[0] && row[1]) // Must have question and answer
+                .map((row, index) => ({
+                    question: row[0],
+                    answer: parseCleanNumber(row[1]),
+                    lastUsed: row[2] || '',
+                    rowIndex: index + 2 // +2 because row 1 is the header, data starts at row 2
+                }));
+        };
+
+        // SHOOTOUT tab rows (A1:Z200) -> array of questions (one per column)
+        const parseShootoutRows = (soRows) => {
+            const questions = [];
+            if (soRows.length === 0) return questions;
+
+            // Calculate max columns across ALL rows so we don't miss columns where Row 1 is empty
+            const numCols = Math.max(...soRows.map(row => row?.length || 0));
+
+            for (let col = 1; col < numCols; col++) {
+                const longQuestion = soRows[0]?.[col] || '';   // Row 1, this column
+                const lastUsed = soRows[1]?.[col] || '';       // Row 2, this column
+                const shortQuestion = soRows[2]?.[col] || '';  // Row 3, this column
+
+                // Answers start at Row 4 (index 3)
+                const answers = [];
+                for (let row = 3; row < soRows.length; row++) {
+                    const answer = soRows[row]?.[col];
+                    if (answer && answer.trim() !== '') {
+                        answers.push(answer.trim());
+                    }
+                }
+
+                if (longQuestion && answers.length > 0) {
+                    questions.push({
+                        colIndex: col,
+                        longQuestion,
+                        shortQuestion,
+                        lastUsed,
+                        answers
+                    });
+                }
+            }
+            return questions;
+        };
+
+        // BOTTOMS UP tab rows (A1:Z200) -> array of questions (one per column)
+        // Row 1 (index 0) = question text
+        // Row 2 (index 1) = Last Used (blank)
+        // Row 3+ (index 2+) = answer choices, where Row 3 = 1 point, Row 4 = 2 points, etc.
+        // A cell can hold MULTIPLE tied answers separated by semicolons
+        // (e.g. "Player A; Player B; Player C") when several entries share
+        // the same real-world rank. All names in that cell get the same
+        // point value, and every row after it skips ahead by however many
+        // names tied for that spot - e.g. 5 players tied for 10th place
+        // (worth 10 points each) means the next row is worth 15, not 11.
+        const parseBottomsUpRows = (buRows) => {
+            const buQuestions = [];
+            if (buRows.length === 0) return buQuestions;
+            const numCols = Math.max(...buRows.map(row => row?.length || 0));
+
+            for (let col = 1; col < numCols; col++) {
+                const questionText = buRows[0]?.[col] || '';
+                const lastUsed = buRows[1]?.[col] || '';
+
+                // Answers start at row index 2 (Row 3 in Sheet)
+                const answers = [];
+                let rankCounter = 0; // how many rank slots have been used up so far
+                for (let row = 2; row < buRows.length; row++) {
+                    const cellValue = buRows[row]?.[col];
+                    if (cellValue && cellValue.trim() !== '') {
+                        // A cell can also hold a second line of text (e.g. typed with
+                        // Alt+Enter in Google Sheets). The first line is the real answer
+                        // (and is still what gets split on ";" for ties, above); any
+                        // line(s) after it are stored as "secondLine" and shown smaller,
+                        // underneath the answer, once it's revealed.
+                        const cellLines = cellValue.split('\n').map(l => l.trim()).filter(l => l !== '');
+                        const mainLine = cellLines[0] || cellValue.trim();
+                        const secondLine = cellLines.slice(1).join(' ');
+                        const tiedNames = mainLine.split(';').map(s => s.trim()).filter(s => s !== '');
+                        const sharedPointValue = rankCounter + 1;
+                        tiedNames.forEach(name => {
+                            answers.push({
+                                text: name,
+                                secondLine,
+                                pointValue: sharedPointValue, // all tied names share this value
+                                rowIndex: row + 1             // Actual Sheet row number for Last Used tracking
+                            });
+                        });
+                        rankCounter += tiedNames.length;
+                    }
+                }
+
+                if (questionText && answers.length > 0) {
+                    buQuestions.push({
+                        colIndex: col,
+                        questionText,
+                        lastUsed,
+                        answers
+                    });
+                }
+            }
+            return buQuestions;
+        };
+
+        // ───────────────────────────────────────────────────────────────────────────────
+        // Bottoms Up "can the trailing team still catch up?" check.
+        // Every team gets 5 regulation turns. A team's very best possible finish is its
+        // current score plus the highest still-unused point values, one per turn it has left
+        // (this ignores anything the other team might take, so it's an upper bound - meaning
+        // if even THAT can't reach a tie, the round is truly decided). A tie keeps the round
+        // going, so a team is only counted out if it can't even TIE.
+        // Returns 1 or 2 (the team that has clinched), or null if it's still open.
+        //   teamJustWent: the team whose turn just finished (Team 1 always goes first in a turn)
+        //   usedValues:   point values already taken (shared by both teams)
+        // ───────────────────────────────────────────────────────────────────────────────
+        const BOTTOMS_UP_REGULATION_TURNS = 5;
+        const getBottomsUpClinchWinner = ({ score1, score2, turnNumber, teamJustWent, usedValues, answers }) => {
+            if (!answers || answers.length === 0) return null;
+            const team1TurnsDone = turnNumber;                                   // Team 1 goes first each turn
+            const team2TurnsDone = teamJustWent === 2 ? turnNumber : turnNumber - 1;
+            const turnsLeft1 = Math.max(0, BOTTOMS_UP_REGULATION_TURNS - team1TurnsDone);
+            const turnsLeft2 = Math.max(0, BOTTOMS_UP_REGULATION_TURNS - team2TurnsDone);
+            // Past regulation (overtime after a tie) there is no "catching up" to calculate -
+            // the existing end-of-turn rule already ends it as soon as the scores differ.
+            if (turnsLeft1 === 0 && turnsLeft2 === 0) return null;
+
+            const used = new Set(usedValues || []);
+            const openValues = [...new Set(answers.map(a => a.pointValue))]
+                .filter(v => v > 0 && !used.has(v))
+                .sort((a, b) => b - a);
+            const bestCase = (turnsLeft) => openValues.slice(0, turnsLeft).reduce((sum, v) => sum + v, 0);
+
+            if (score1 + bestCase(turnsLeft1) < score2) return 2; // Team 1 can't even tie
+            if (score2 + bestCase(turnsLeft2) < score1) return 1; // Team 2 can't even tie
+            return null;
+        };
+
         function TriviaGame() {
             const [team1Score, setTeam1Score] = useState(0);
             const [team2Score, setTeam2Score] = useState(0);
@@ -487,6 +657,7 @@
             const [soundbarVolume, setSoundbarVolume] = useState(1); // 1 = 100%, can only go down from here
             const [showVolumeTooltip, setShowVolumeTooltip] = useState(false);
             const soundbarAudioRef = React.useRef(null);
+            const sheetTabsRef = React.useRef(null); // tab names from the last full sheet load (used by live refresh)
             const [winnerTeam, setWinnerTeam] = useState(null);
 
             // Stream profile states
@@ -523,6 +694,10 @@
             const [bottomsUpHostInput, setBottomsUpHostInput] = useState('');
             const [bottomsUpModalMatches, setBottomsUpModalMatches] = useState([]);
             const [bottomsUpShowModal, setBottomsUpShowModal] = useState(false);
+            const [showBottomsUpOverride, setShowBottomsUpOverride] = useState(false); // host-only "stuck round" panel
+            const [hostWarning, setHostWarning] = useState('');                         // red banner text for the host
+            const [lastSheetsRefresh, setLastSheetsRefresh] = useState(null);           // { time, ok, changed[], note }
+            const [sheetsRefreshing, setSheetsRefreshing] = useState(false);
             const [bottomsUpConfirmedAnswer, setBottomsUpConfirmedAnswer] = useState(null);
             const [bottomsUpAnimating, setBottomsUpAnimating] = useState(false);
             const [bottomsUpAnimationValue, setBottomsUpAnimationValue] = useState(0);
@@ -590,7 +765,7 @@
                 { id: 16, name: "Trivia Rodrigo", logo: "Trivia Rodrigo.png", color: "#BC8EEC"} 
             ];
 
-            const imagePath = 'https://raw.githubusercontent.com/BBHometowns/HTL/main/Graphics/';
+            const imagePath = 'https://raw.githubusercontent.com/SubversionGames/HTL/main/Graphics/';
             const audioPath = '/';
             const SHEETS_API_KEY = 'AIzaSyBLbJVMfP7vCU0ccKwVcwNBJPOlN8BAFvI';
             const SHEETS_ID = '1EN3FSORt1A0TKcHcnaz62CDF0rdGABVGG_2IuYEja7o';
@@ -1004,7 +1179,10 @@
                 backgroundFading, whiteFading, introStep,
                 bottomsUpAnimating, bottomsUpAnimationValue, bottomsUpPhase,
                 bottomsUpFlyingScore, bottomsUpShowAnswer, bottomsUpGlowing,
-                bottomsUpConfirmedAnswer, bottomsUpActiveTeam, bottomsUpUsedAnswers, bottomsUpTurnNumber
+                bottomsUpConfirmedAnswer, bottomsUpActiveTeam, bottomsUpUsedAnswers, bottomsUpTurnNumber,
+                // Questions themselves: so a live edit pulled in from Google Sheets reaches the Stream right away
+                closestToQuestions, bottomsUpQuestion, tieBreakerBottomsUpQuestion,
+                selectedShootoutQuestion, selectedTieBreakerShootoutQuestion
             ]);
             
             // Intro animation sequence
@@ -1135,7 +1313,10 @@
                     const hasClosestTo = !!closestToTab;
                     const hasShootout = !!shootoutTab;
                     const hasBottomsUp = !!bottomsUpTab;
-                    
+                    // Remember the tab names so the live "refresh questions" feature can re-read just
+                    // the tabs it needs later without asking Google for the tab list again.
+                    sheetTabsRef.current = { matchTabs, closestToTab, shootoutTab, bottomsUpTab };
+
                     // --- LOAD MATCH TABS ---
                     const loadedMatches = [];
                     
@@ -1147,25 +1328,9 @@
                         const data = await response.json();
                         const rows = data.values || [];
                         
-                        // Parse rows into rounds
-                        const rounds = [];
-                        for (let i = 0; i < rows.length; i += 2) {
-                            const row1 = rows[i] || [];
-                            const row2 = rows[i + 1] || [];
-                            
-                            if (row1.length < 5) continue; // Skip incomplete rows
-                            
-                            rounds.push({
-                                category: row1[1] || '',      // Column B
-                                question1: row1[3] || '',     // Column D
-                                answer1: row1[4] || '',       // Column E
-                                imageUrl1: row1[5] || null,   // Column F (optional image for Q1)
-                                question2: row2[3] || '',     // Column D
-                                answer2: row2[4] || '',       // Column E
-                                imageUrl2: row2[5] || null    // Column F (optional image for Q2)
-                            });
-                        }
-                        
+                        // Parse rows into rounds (rules live in parseMatchRows, near the top of the file)
+                        const rounds = parseMatchRows(rows);
+
                         loadedMatches.push({
                             id: tabName,
                             name: matchName,
@@ -1182,16 +1347,9 @@
                         const ctData = await ctResponse.json();
                         const ctRows = ctData.values || [];
                         
-                        // Skip Row 1 (labels), load all questions
-                        const questions = ctRows
-                            .filter(row => row[0] && row[1]) // Must have question and answer
-                            .map((row, index) => ({
-                                question: row[0],
-                                answer: parseCleanNumber(row[1]),
-                                lastUsed: row[2] || '',
-                                rowIndex: index + 2 // +2 because row 1 is the header, data starts at row 2
-                            }));
-                        
+                        // Skip Row 1 (labels), load all questions (rules live in parseClosestToRows)
+                        const questions = parseClosestToRows(ctRows);
+
                         // Shuffle so they come out in random order each game
                         const shuffled = questions.sort(() => Math.random() - 0.5);
                         setClosestToQuestions(shuffled);
@@ -1205,37 +1363,8 @@
                         const soRows = soData.values || [];
                         
                         if (soRows.length > 0) {
-                            const questions = [];
-                            
-                            // Calculate max columns across ALL rows so we don't miss columns where Row 1 is empty
-                            const numCols = Math.max(...soRows.map(row => row?.length || 0));
-
-                            for (let col = 1; col < numCols; col++) {
-                                const longQuestion = soRows[0]?.[col] || '';   // Row 1, this column
-                                const lastUsed = soRows[1]?.[col] || '';       // Row 2, this column
-                                const shortQuestion = soRows[2]?.[col] || '';  // Row 3, this column
-                                
-                                // Answers start at Row 4 (index 3)
-                                const answers = [];
-                                for (let row = 3; row < soRows.length; row++) {
-                                    const answer = soRows[row]?.[col];
-                                    if (answer && answer.trim() !== '') {
-                                        answers.push(answer.trim());
-                                    }
-                                }
-                                
-                                if (longQuestion && answers.length > 0) {
-                                    questions.push({
-                                        colIndex: col,
-                                        longQuestion,
-                                        shortQuestion,
-                                        lastUsed,
-                                        answers
-                                    });
-                                }
-                            }
-                            
-                            setShootoutQuestions(questions);
+                            // Rules live in parseShootoutRows (near the top of the file)
+                            setShootoutQuestions(parseShootoutRows(soRows));
                         }
                     }
 
@@ -1247,61 +1376,9 @@
                         const buRows = buData.values || [];
                         
                         if (buRows.length > 0) {
-                            const buQuestions = [];
-                            const numCols = Math.max(...buRows.map(row => row?.length || 0));
-                            
-                            // Each column is one question
-                            // Row 1 (index 0) = question text
-                            // Row 2 (index 1) = Last Used (blank)
-                            // Row 3+ (index 2+) = answer choices, where Row 3 = 1 point, Row 4 = 2 points, etc.
-                            // A cell can hold MULTIPLE tied answers separated by semicolons
-                            // (e.g. "Player A; Player B; Player C") when several entries share
-                            // the same real-world rank. All names in that cell get the same
-                            // point value, and every row after it skips ahead by however many
-                            // names tied for that spot - e.g. 5 players tied for 10th place
-                            // (worth 10 points each) means the next row is worth 15, not 11.
-                            for (let col = 1; col < numCols; col++) {
-                                const questionText = buRows[0]?.[col] || '';
-                                const lastUsed = buRows[1]?.[col] || '';
-                                
-                                // Answers start at row index 2 (Row 3 in Sheet)
-                                const answers = [];
-                                let rankCounter = 0; // how many rank slots have been used up so far
-                                for (let row = 2; row < buRows.length; row++) {
-                                    const cellValue = buRows[row]?.[col];
-                                    if (cellValue && cellValue.trim() !== '') {
-                                        // A cell can also hold a second line of text (e.g. typed with
-                                        // Alt+Enter in Google Sheets). The first line is the real answer
-                                        // (and is still what gets split on ";" for ties, above); any
-                                        // line(s) after it are stored as "secondLine" and shown smaller,
-                                        // underneath the answer, once it's revealed.
-                                        const cellLines = cellValue.split('\n').map(l => l.trim()).filter(l => l !== '');
-                                        const mainLine = cellLines[0] || cellValue.trim();
-                                        const secondLine = cellLines.slice(1).join(' ');
-                                        const tiedNames = mainLine.split(';').map(s => s.trim()).filter(s => s !== '');
-                                        const sharedPointValue = rankCounter + 1;
-                                        tiedNames.forEach(name => {
-                                            answers.push({
-                                                text: name,
-                                                secondLine,
-                                                pointValue: sharedPointValue, // all tied names share this value
-                                                rowIndex: row + 1             // Actual Sheet row number for Last Used tracking
-                                            });
-                                        });
-                                        rankCounter += tiedNames.length;
-                                    }
-                                }
-                                
-                                if (questionText && answers.length > 0) {
-                                    buQuestions.push({
-                                        colIndex: col,
-                                        questionText,
-                                        lastUsed,
-                                        answers
-                                    });
-                                }
-                            }
-                            
+                            // Rules (tied answers split on ";", second lines, point values) live in
+                            // parseBottomsUpRows, near the top of the file
+                            const buQuestions = parseBottomsUpRows(buRows);
                             setBottomsUpQuestions(buQuestions);
                             console.log(`✅ Loaded ${buQuestions.length} Bottoms Up questions`);
                         }
@@ -1362,6 +1439,44 @@
                 setShowImageOverlay(gameState.showImageOverlay || false);
                 setCurrentImageUrl(gameState.currentImageUrl || null);
                 setTimersExpanded(gameState.timersExpanded || false);
+
+                // ── Bonus/tiebreaker questions and Bottoms Up round progress ──
+                // These used to be left out of this restore, so rejoining as host (or resuming) in the
+                // middle of a bonus round gave the host's screen NO question at all: the answer bar
+                // silently did nothing, and the host then overwrote the saved copy with that empty
+                // question too. The Stream screen already restores these same fields from Firebase,
+                // so now the host does as well.
+                setShowDistances(gameState.showDistances || false);
+                setShootoutBoxExpanded(gameState.shootoutBoxExpanded || false);
+                setShootoutComplete(gameState.shootoutComplete || false);
+                setShootoutSecondBoardPending(gameState.shootoutSecondBoardPending || false);
+                setSelectedShootoutQuestion(gameState.selectedShootoutQuestion ?? null);
+                setSelectedTieBreakerShootoutQuestion(gameState.selectedTieBreakerShootoutQuestion ?? null);
+                setUsedShootoutColIndices(gameState.usedShootoutColIndices || []);
+                if (gameState.closestToQuestions && gameState.closestToQuestions.length > 0) setClosestToQuestions(gameState.closestToQuestions);
+                setDoubleDipSecondGuess(gameState.doubleDipSecondGuess || false);
+                setDoubleDipTeam(gameState.doubleDipTeam ?? null);
+                setDoubleDipActive(gameState.doubleDipActive || false);
+
+                setBottomsUpQuestion(gameState.bottomsUpQuestion ?? null);
+                setTieBreakerBottomsUpQuestion(gameState.tieBreakerBottomsUpQuestion ?? null);
+                setBottomsUpTurnNumber(gameState.bottomsUpTurnNumber ?? 1);
+                setBottomsUpActiveTeam(gameState.bottomsUpActiveTeam || 1);
+                setBottomsUpUsedAnswers(gameState.bottomsUpUsedAnswers || []);
+                // A turn that was frozen mid-popup or mid-score-animation can't be resumed exactly
+                // (the animation's timers are gone), so it's put back at the nearest safe spot:
+                // the answer popup goes back to "type the answer", the animation goes to "between turns".
+                const savedBottomsUpPhase = gameState.bottomsUpPhase || 'question';
+                setBottomsUpPhase(savedBottomsUpPhase === 'modal' ? 'input' : savedBottomsUpPhase === 'animating' ? 'between' : savedBottomsUpPhase);
+                setBottomsUpAnimating(false);
+                setBottomsUpAnimationValue(0);
+                setBottomsUpShowAnswer(false);
+                setBottomsUpFlyingScore(false);
+                setBottomsUpGlowing(false);
+                setBottomsUpConfirmedAnswer(null);
+                setBottomsUpShowModal(false);
+                setBottomsUpHostInput('');
+
                 setTeamsConfirmed(true);
                 setShowIntro(false);
                 setIntroStep(5);
@@ -2234,7 +2349,12 @@
 
             const handleBottomsUpSearch = () => {
                 console.log('handleBottomsUpSearch called, input:', bottomsUpHostInput, 'question:', activeBottomsUpQuestion?.answers?.length, 'answers');
-                if (!bottomsUpHostInput.trim() || !activeBottomsUpQuestion) return;
+                if (!bottomsUpHostInput.trim()) return;
+                if (!activeBottomsUpQuestion) {
+                    // Used to fail silently (nothing happened when Enter was pressed). Now say so.
+                    setHostWarning('The Bottoms Up question is not loaded - it is being reloaded now. Try again in a few seconds, or use BONUS OVERRIDE (bottom-left).');
+                    return;
+                }
                 
                 const normalize = (str) => str.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
                 const typedNormalized = normalize(bottomsUpHostInput);
@@ -2284,6 +2404,17 @@
                 setBottomsUpHostInput('');
                 setBottomsUpConfirmedAnswer(null);
                 
+                // Early finish: if the other team can no longer even tie, the round is decided
+                const noGuessClinchWinner = getBottomsUpClinchWinner({
+                    score1: bonusScore1, score2: bonusScore2,
+                    turnNumber: bottomsUpTurnNumber, teamJustWent: bottomsUpActiveTeam,
+                    usedValues: bottomsUpUsedAnswers, answers: activeBottomsUpQuestion?.answers
+                });
+                if (noGuessClinchWinner) {
+                    finishBottomsUpRound(noGuessClinchWinner);
+                    return;
+                }
+                
                 // Advance to next team/turn
                 if (bottomsUpActiveTeam === 1) {
                     // Move to Team 2's turn (same turn number)
@@ -2316,6 +2447,17 @@
                 setBottomsUpAnimationValue(0);
                 setBottomsUpHostInput('');
                 
+                // Early finish (in case NEXT TURN is clicked before the automatic finish kicks in)
+                const nextTurnClinchWinner = getBottomsUpClinchWinner({
+                    score1: bonusScore1, score2: bonusScore2,
+                    turnNumber: bottomsUpTurnNumber, teamJustWent: bottomsUpActiveTeam,
+                    usedValues: bottomsUpUsedAnswers, answers: activeBottomsUpQuestion?.answers
+                });
+                if (nextTurnClinchWinner) {
+                    finishBottomsUpRound(nextTurnClinchWinner);
+                    return;
+                }
+                
                 if (bottomsUpActiveTeam === 1) {
                     // Move to Team 2's turn (same turn number)
                     setBottomsUpActiveTeam(2);
@@ -2341,8 +2483,22 @@
                 }
             };
 
+            // The normal end of a Bottoms Up round: whoever has more points wins.
             const handleBottomsUpComplete = () => {
-                const winner = bonusScore1 > bonusScore2 ? 1 : 2;
+                finishBottomsUpRound(bonusScore1 > bonusScore2 ? 1 : 2);
+            };
+
+            // Ends the Bottoms Up round and moves the match on. winner is 1 or 2 (that team gets the
+            // match points), or 0 (host override "skip bonus" - nobody gets points; bonus rounds only).
+            // Used by the normal end of the round, the automatic "can't catch up" early finish, and
+            // the host override panel.
+            const finishBottomsUpRound = (winner) => {
+                setTimerRunning(false);
+                setBottomsUpShowModal(false);
+                setBottomsUpShowAnswer(false);
+                setBottomsUpFlyingScore(false);
+                setBottomsUpGlowing(false);
+                setShowBottomsUpOverride(false);
                 
                 if (currentRound === 14) {
                     // Tiebreaker - worth 1 match point
@@ -2370,10 +2526,10 @@
                     return;
                 }
                 
-                // Regular bonus - worth 2 match points
+                // Regular bonus - worth 2 match points (winner 0 = host skipped it, no points)
                 if (winner === 1) {
                     setTeam1Score(team1Score + 2);
-                } else {
+                } else if (winner === 2) {
                     setTeam2Score(team2Score + 2);
                 }
                 
@@ -2719,6 +2875,227 @@
             // needing a new synced flag of their own.
             const bottomsUpBoxExpanded = (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'bottomsUp' && bottomsUpPhase !== 'question';
 
+            // ═══════════════════════════════════════════════════════════════════════════
+            // HOST SAFETY NETS + LIVE QUESTION REFRESH
+            // ═══════════════════════════════════════════════════════════════════════════
+            const isBottomsUpRound = (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'bottomsUp';
+            const bottomsUpQuestionMissing = userMode === 'host' && gameStarted && isBottomsUpRound && !activeBottomsUpQuestion;
+
+            // Always-current copies of values that timers and network calls (which started a moment
+            // ago) need - otherwise they'd be looking at old values from when they started.
+            const liveRefreshCtxRef = React.useRef({});
+            liveRefreshCtxRef.current = {
+                selectedMatch, bonusType, tieBreakerType, currentRound, bottomsUpPhase,
+                closestToQuestions, shootoutQuestions, selectedShootoutQuestion, selectedTieBreakerShootoutQuestion,
+                shootoutShuffledAnswers, bottomsUpQuestions, bottomsUpQuestion, tieBreakerBottomsUpQuestion
+            };
+            const sheetsRefreshingRef = React.useRef(false);
+            const finishBottomsUpRoundRef = React.useRef(null);
+            finishBottomsUpRoundRef.current = finishBottomsUpRound;
+
+            // Compares two pieces of data ignoring null fields (Firebase quietly drops null fields
+            // when it saves, so a question that came back from Firebase would otherwise always look
+            // "different" from the same question freshly read from the sheet).
+            const sameData = (a, b) => {
+                const clean = (k, v) => (v === null ? undefined : v);
+                return JSON.stringify(a, clean) === JSON.stringify(b, clean);
+            };
+
+            // Re-reads the Google Sheet and quietly updates the questions that are already in the game
+            // (the loaded match's rounds, plus whichever bonus/tiebreaker tabs this match uses) so a
+            // fix made in the sheet - a spelling error, say - goes live on Host and Stream right away,
+            // without reloading or restarting the match. It only reads the tabs it needs (a few small
+            // requests), never reshuffles anything, and leaves things alone that would scramble a round
+            // already in play (rows added/removed mid-round).
+            const refreshLiveQuestions = async () => {
+                if (sheetsRefreshingRef.current) return;
+                // The very first load never finished (e.g. internet was down) - do a full load instead.
+                if (!sheetTabsRef.current) { fetchSheetsData(); return; }
+                sheetsRefreshingRef.current = true;
+                setSheetsRefreshing(true);
+                try {
+                    const tabs = sheetTabsRef.current;
+                    const start = liveRefreshCtxRef.current;
+                    const matchId = start.selectedMatch?.id;
+                    const readTab = async (tabName, range) => {
+                        const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${encodeURIComponent(tabName)}!${range}?key=${SHEETS_API_KEY}`;
+                        const res = await fetch(url);
+                        if (!res.ok) throw new Error(`Google Sheets answered with an error (${res.status})`);
+                        const data = await res.json();
+                        return data.values || [];
+                    };
+
+                    // Only the tabs this match actually uses
+                    const wantTypes = new Set([start.bonusType, start.tieBreakerType].filter(Boolean));
+                    const jobs = {};
+                    if (matchId && tabs.matchTabs.includes(matchId)) jobs.match = readTab(matchId, 'A2:F25');
+                    if (wantTypes.has('closestTo') && tabs.closestToTab) jobs.closestTo = readTab(tabs.closestToTab, 'A2:C1000');
+                    if (wantTypes.has('shootout') && tabs.shootoutTab) jobs.shootout = readTab(tabs.shootoutTab, 'A1:Z200');
+                    if (wantTypes.has('bottomsUp') && tabs.bottomsUpTab) jobs.bottomsUp = readTab(tabs.bottomsUpTab, 'A1:Z200');
+                    const keys = Object.keys(jobs);
+                    const results = await Promise.all(keys.map(k => jobs[k]));
+                    const rowsByKey = {};
+                    keys.forEach((k, i) => { rowsByKey[k] = results[i]; });
+
+                    // Re-read the latest game values now that the network calls are done
+                    const ctx = liveRefreshCtxRef.current;
+                    const changed = [];
+                    const notes = [];
+
+                    // ── Regular match questions ──
+                    if (rowsByKey.match && ctx.selectedMatch && ctx.selectedMatch.id === matchId) {
+                        const rounds = parseMatchRows(rowsByKey.match);
+                        const cur = ctx.selectedMatch;
+                        if (rounds.length !== (cur.rounds || []).length) {
+                            notes.push('rounds were added/removed in the sheet - not applied mid-match');
+                        } else if (!sameData(rounds, cur.rounds)) {
+                            setSelectedMatch(prev => (prev && prev.id === matchId) ? { ...prev, rounds } : prev);
+                            setSheetsMatches(prev => prev.map(m => m.id === matchId ? { ...m, rounds } : m));
+                            changed.push('match questions');
+                        }
+                    }
+
+                    // ── Closest To (keeps the shuffled order; only updates text/answers in place) ──
+                    if (rowsByKey.closestTo) {
+                        const fresh = parseClosestToRows(rowsByKey.closestTo);
+                        const cur = ctx.closestToQuestions || [];
+                        if (cur.length === 0) {
+                            if (fresh.length > 0) {
+                                setClosestToQuestions([...fresh].sort(() => Math.random() - 0.5));
+                                changed.push('Closest To questions');
+                            }
+                        } else {
+                            const byRow = {};
+                            fresh.forEach(q => { byRow[q.rowIndex] = q; });
+                            const needsUpdate = cur.some(q => { const f = byRow[q.rowIndex]; return f && (f.question !== q.question || !Object.is(f.answer, q.answer)); });
+                            if (needsUpdate) {
+                                setClosestToQuestions(prev => prev.map(q => { const f = byRow[q.rowIndex]; return f ? { ...q, question: f.question, answer: f.answer } : q; }));
+                                changed.push('Closest To question');
+                            }
+                        }
+                    }
+
+                    // ── Shootout ──
+                    if (rowsByKey.shootout) {
+                        const fresh = parseShootoutRows(rowsByKey.shootout);
+                        const mergeShootout = (sel) => {
+                            if (!sel) return sel;
+                            const f = fresh.find(q => q.colIndex === sel.colIndex);
+                            if (!f) return sel;
+                            // Same number of answers = a pure edit (typo fix etc.), safe to apply live. A
+                            // different number means rows were added/removed, which would scramble a board
+                            // that's already in play, so only the question wording is applied.
+                            const sameShape = Array.isArray(sel.answers) && sel.answers.length === f.answers.length;
+                            if (!sameShape) notes.push('Shootout answers were added/removed - answers not changed mid-match');
+                            return { ...sel, longQuestion: f.longQuestion, shortQuestion: f.shortQuestion, answers: sameShape ? f.answers : sel.answers };
+                        };
+                        if (!sameData(fresh, ctx.shootoutQuestions)) setShootoutQuestions(fresh);
+                        const newSel = mergeShootout(ctx.selectedShootoutQuestion);
+                        const newTie = mergeShootout(ctx.selectedTieBreakerShootoutQuestion);
+                        if (!sameData(newSel, ctx.selectedShootoutQuestion)) { setSelectedShootoutQuestion(newSel); changed.push('Shootout question'); }
+                        if (!sameData(newTie, ctx.selectedTieBreakerShootoutQuestion)) { setSelectedTieBreakerShootoutQuestion(newTie); changed.push('Tiebreaker Shootout question'); }
+                        // The board shows a shuffled copy of the answers, each tagged with its original
+                        // position. Update the wording inside that copy in place, so nothing moves.
+                        const activeQ = ctx.currentRound === 14 ? (newTie || fresh[0]) : (newSel || fresh[0]);
+                        const activeAnswers = activeQ && activeQ.answers;
+                        if (activeAnswers && ctx.shootoutShuffledAnswers.length === activeAnswers.length &&
+                            ctx.shootoutShuffledAnswers.some(item => activeAnswers[item.originalIndex] !== undefined && activeAnswers[item.originalIndex] !== item.answer)) {
+                            setShootoutShuffledAnswers(prev => prev.length === activeAnswers.length
+                                ? prev.map(item => ({ ...item, answer: activeAnswers[item.originalIndex] ?? item.answer }))
+                                : prev);
+                            if (!changed.includes('Shootout question')) changed.push('Shootout answers');
+                        }
+                    }
+
+                    // ── Bottoms Up ──
+                    if (rowsByKey.bottomsUp) {
+                        const fresh = parseBottomsUpRows(rowsByKey.bottomsUp);
+                        const roundUnderway = ctx.bottomsUpPhase !== 'question';
+                        const shapeOf = (q) => (q.answers || []).map(a => `${a.rowIndex}:${a.pointValue}`).join('|');
+                        const mergeBottomsUp = (sel) => {
+                            if (!sel) return sel;
+                            const f = fresh.find(q => q.colIndex === sel.colIndex);
+                            if (!f) return sel;
+                            // Round already underway and the answer list changed shape (rows added/removed/
+                            // re-ranked): keep the old answers so points and "already used" answers stay
+                            // consistent - but still apply the new question wording.
+                            if (roundUnderway && shapeOf(f) !== shapeOf(sel)) {
+                                notes.push('Bottoms Up answers were added/removed/re-ordered - answers not changed mid-round');
+                                return { ...sel, questionText: f.questionText };
+                            }
+                            return f;
+                        };
+                        if (!sameData(fresh, ctx.bottomsUpQuestions)) setBottomsUpQuestions(fresh);
+                        const newBU = mergeBottomsUp(ctx.bottomsUpQuestion);
+                        const newTieBU = mergeBottomsUp(ctx.tieBreakerBottomsUpQuestion);
+                        if (!sameData(newBU, ctx.bottomsUpQuestion)) { setBottomsUpQuestion(newBU); changed.push('Bottoms Up question'); }
+                        if (!sameData(newTieBU, ctx.tieBreakerBottomsUpQuestion)) { setTieBreakerBottomsUpQuestion(newTieBU); changed.push('Tiebreaker Bottoms Up question'); }
+                    }
+
+                    setLastSheetsRefresh({ time: Date.now(), ok: true, changed, note: notes[0] || '' });
+                } catch (error) {
+                    console.warn('Live question refresh failed:', error);
+                    setLastSheetsRefresh(prev => ({ time: prev?.time ?? null, ok: false, changed: [], note: error.message }));
+                } finally {
+                    sheetsRefreshingRef.current = false;
+                    setSheetsRefreshing(false);
+                }
+            };
+            const refreshLiveQuestionsRef = React.useRef(null);
+            refreshLiveQuestionsRef.current = refreshLiveQuestions;
+
+            // Host: check the sheet for edits every 30 seconds while a match is running
+            useEffect(() => {
+                if (userMode !== 'host' || !gameStarted) return;
+                const interval = setInterval(() => { if (refreshLiveQuestionsRef.current) refreshLiveQuestionsRef.current(); }, 30000);
+                return () => clearInterval(interval);
+            }, [userMode, gameStarted]);
+
+            // Keeps the "synced Xs ago" label ticking over
+            const [, setSyncClockTick] = useState(0);
+            useEffect(() => {
+                if (userMode !== 'host' || !gameStarted) return;
+                const interval = setInterval(() => setSyncClockTick(t => t + 1), 10000);
+                return () => clearInterval(interval);
+            }, [userMode, gameStarted]);
+
+            // Host: if the Bottoms Up question is missing, fix it instead of leaving the round dead.
+            // - questions available -> pick one right away
+            // - nothing loaded (e.g. internet dropped while loading) -> keep retrying Google Sheets
+            useEffect(() => {
+                if (!bottomsUpQuestionMissing) return;
+                if (bottomsUpQuestions.length > 0) {
+                    const pick = bottomsUpQuestions[Math.floor(Math.random() * bottomsUpQuestions.length)];
+                    if (currentRound === 14) setTieBreakerBottomsUpQuestion(pick); else setBottomsUpQuestion(pick);
+                    setHostWarning('The Bottoms Up question was missing, so a new one was picked automatically.');
+                    return;
+                }
+                const retry = setTimeout(() => { if (refreshLiveQuestionsRef.current) refreshLiveQuestionsRef.current(); }, 8000);
+                return () => clearTimeout(retry);
+            }, [bottomsUpQuestionMissing, bottomsUpQuestions.length, sheetsRefreshing, sheetsLoading, currentRound]);
+
+            // Host: red warning banner clears itself after a while
+            useEffect(() => {
+                if (!hostWarning) return;
+                const t = setTimeout(() => setHostWarning(''), 12000);
+                return () => clearTimeout(t);
+            }, [hostWarning]);
+
+            // Host: automatically end Bottoms Up the moment one team can no longer even tie.
+            // Waits ~2 seconds on the finished turn so everyone sees the final scores, then awards the
+            // match points and moves on (same as clicking through the end of the round normally).
+            useEffect(() => {
+                if (userMode !== 'host' || bottomsUpPhase !== 'between' || !isBottomsUpRound) return;
+                const clinchWinner = getBottomsUpClinchWinner({
+                    score1: bonusScore1, score2: bonusScore2,
+                    turnNumber: bottomsUpTurnNumber, teamJustWent: bottomsUpActiveTeam,
+                    usedValues: bottomsUpUsedAnswers, answers: activeBottomsUpQuestion?.answers
+                });
+                if (!clinchWinner) return;
+                const t = setTimeout(() => finishBottomsUpRoundRef.current(clinchWinner), 2000);
+                return () => clearTimeout(t);
+            }, [userMode, bottomsUpPhase, isBottomsUpRound, bonusScore1, bonusScore2, bottomsUpTurnNumber, bottomsUpActiveTeam, bottomsUpUsedAnswers, activeBottomsUpQuestion]);
+
             // Shuffle shootout answers when match is selected - also re-shuffles
             // whenever a different Shootout question gets selected mid-match (e.g.
             // a second-board swap after the first board runs out of answers),
@@ -2731,7 +3108,7 @@
                         .sort(() => Math.random() - 0.5);
                     setShootoutShuffledAnswers(shuffled);
                 }
-            }, [selectedMatch, currentRound, selectedShootoutQuestion?.colIndex, selectedTieBreakerShootoutQuestion?.colIndex]);
+            }, [selectedMatch?.id, currentRound, selectedShootoutQuestion?.colIndex, selectedTieBreakerShootoutQuestion?.colIndex]);
 
             // Host-only sorted view of the Shootout answers (numeric or alphabetical, filled row by row).
             // This is ONLY used for what the Host screen displays - shootoutShuffledAnswers (above) is left
@@ -4678,6 +5055,99 @@
                                 String(bottomsUpAnimationValue)}
                             </div>
 
+                        </div>
+                    )}
+
+                    {/* HOST ONLY: red warning banner (missing question, auto-recovery notices, etc.) */}
+                    {userMode === 'host' && gameStarted && (bottomsUpQuestionMissing || hostWarning) && (
+                        <div className="absolute font-bold text-white text-center" style={{
+                            top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 80,
+                            backgroundColor: '#b91c1c', border: '4px solid black', borderRadius: '16px',
+                            padding: '16px 32px', fontSize: '30px', maxWidth: '2200px'
+                        }}>
+                            {bottomsUpQuestionMissing
+                                ? '⚠ The Bottoms Up question is not loaded - reloading it from Google Sheets...'
+                                : hostWarning}
+                        </div>
+                    )}
+
+                    {/* HOST ONLY: small tools in the bottom-left corner - refresh questions from the sheet
+                        (edits made in Google Sheets go live on Host and Stream), and the Bonus Override
+                        for a stuck Bottoms Up round. Kept small and tucked away so they can't be hit by accident. */}
+                    {userMode === 'host' && gameStarted && !showWinnerScreen && (
+                        <div className="absolute flex items-center" style={{left: '24px', bottom: '24px', zIndex: 40, gap: '16px'}}>
+                            <button
+                                onClick={() => refreshLiveQuestions()}
+                                disabled={sheetsRefreshing}
+                                className="bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold rounded-lg border-2 border-gray-600"
+                                style={{fontSize: '24px', padding: '10px 20px', opacity: 0.85}}
+                            >
+                                {sheetsRefreshing ? '↻ Checking sheet...' : '↻ Refresh questions'}
+                            </button>
+                            <span style={{fontSize: '22px', color: lastSheetsRefresh && !lastSheetsRefresh.ok ? '#fca5a5' : '#9ca3af'}}>
+                                {(() => {
+                                    const r = lastSheetsRefresh;
+                                    if (!r) return 'Questions loaded when the match started';
+                                    const ago = r.time ? Math.max(0, Math.round((Date.now() - r.time) / 1000)) : null;
+                                    const agoText = ago === null ? '' : ago < 5 ? 'just now' : ago < 60 ? `${ago}s ago` : `${Math.floor(ago / 60)}m ago`;
+                                    if (!r.ok) return `⚠ Couldn't reach Google Sheets${agoText ? ` (last synced ${agoText})` : ''}`;
+                                    const upd = r.changed.length > 0 && ago !== null && ago < 20 ? ` - updated: ${r.changed.join(', ')}` : '';
+                                    return `Synced ${agoText}${upd}${r.note ? ` - note: ${r.note}` : ''}`;
+                                })()}
+                            </span>
+                            {isBottomsUpRound && (
+                                <button
+                                    onClick={() => setShowBottomsUpOverride(true)}
+                                    disabled={bottomsUpPhase === 'animating'}
+                                    className="bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold rounded-lg border-2 border-gray-600"
+                                    style={{fontSize: '24px', padding: '10px 20px', opacity: bottomsUpPhase === 'animating' ? 0.4 : 0.85}}
+                                >
+                                    ⚙ Bonus override
+                                </button>
+                            )}
+                        </div>
+                    )}
+
+                    {/* HOST ONLY: Bonus Override panel - an emergency exit if a Bottoms Up round gets stuck */}
+                    {userMode === 'host' && showBottomsUpOverride && isBottomsUpRound && (
+                        <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 70}}>
+                            <div className="bg-gray-900 rounded-3xl p-8 border-8" style={{borderColor: '#ef4444', width: '1100px'}}>
+                                <h2 className="text-4xl font-bold text-white mb-2 text-center">Bonus Override</h2>
+                                <p className="text-gray-300 text-center text-xl mb-2">
+                                    Bonus score right now: {selectedTeam1?.name} {bonusScore1} - {bonusScore2} {selectedTeam2?.name}
+                                </p>
+                                <p className="text-gray-400 text-center text-lg mb-8">
+                                    Use this only if the round is stuck. It ends Bottoms Up immediately and moves the match on.
+                                </p>
+                                <div className="flex flex-col gap-4">
+                                    <button
+                                        onClick={() => finishBottomsUpRound(1)}
+                                        className="bg-green-600 hover:bg-green-500 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-2xl"
+                                    >
+                                        Award {selectedTeam1?.name} the {currentRound === 14 ? 'tiebreaker (1 point)' : 'bonus (2 points)'}
+                                    </button>
+                                    <button
+                                        onClick={() => finishBottomsUpRound(2)}
+                                        className="bg-green-600 hover:bg-green-500 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-2xl"
+                                    >
+                                        Award {selectedTeam2?.name} the {currentRound === 14 ? 'tiebreaker (1 point)' : 'bonus (2 points)'}
+                                    </button>
+                                    {currentRound !== 14 && (
+                                        <button
+                                            onClick={() => finishBottomsUpRound(0)}
+                                            className="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-2xl"
+                                        >
+                                            Skip the bonus - no points
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => setShowBottomsUpOverride(false)}
+                                        className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-3 px-8 rounded-lg border-4 border-black text-xl"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     )}
 
