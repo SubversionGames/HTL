@@ -327,6 +327,9 @@
 </head>
 <body>
     <div id="root"></div>
+    <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
+         the markers is rewritten every time an update is published. -->
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 5:59 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -570,6 +573,217 @@
             return null;
         };
 
+
+        // ────────────────────────────────────────────────────────────────
+        // LEAGUE RECORDS (hometownstrivialeague.lol) + THUMBNAIL MAKER
+        // The league site shows its standings as plain web-page HTML (no data feed), and a browser is
+        // not allowed to read another site's pages directly, so the page is fetched through free public
+        // "relay" services (tried in turn). Everything that uses this keeps the numbers editable, so a
+        // relay being down just means typing the record in.
+        // ────────────────────────────────────────────────────────────────
+        const LEAGUE_SITE = 'https://hometownstrivialeague.lol/';
+        const LEAGUE_RELAYS = [
+            (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+            (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+            (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`
+        ];
+        const normTeamName = (n) => String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        // Reads the standings table out of the league homepage HTML: rows like  # | Team | W | L | Diff
+        const parseStandingsHtml = (html) => {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const seen = new Set();
+            const rows = [];
+            doc.querySelectorAll('tr').forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll('td,th'));
+                if (cells.length < 4) return;
+                const link = tr.querySelector('a');
+                const name = ((link ? link.textContent : cells[1].textContent) || '').replace(/\s+/g, ' ').trim();
+                const nums = cells.map(c => c.textContent.trim());
+                const w = parseInt(nums[2], 10), l = parseInt(nums[3], 10);
+                if (!name || !Number.isFinite(w) || !Number.isFinite(l) || !/^\d+$/.test(nums[2]) || !/^\d+$/.test(nums[3])) return;
+                const key = normTeamName(name);
+                if (seen.has(key)) return;
+                seen.add(key);
+                rows.push({ name, w, l });
+            });
+            // The homepage shows the newest season; its label ("Season 3 underway") tells us which number it is
+            const text = (doc.body ? doc.body.textContent : '') || '';
+            const under = text.match(/Season\s+(\d+)\s+underway/i);
+            let season = under ? parseInt(under[1], 10) : null;
+            if (season === null) {
+                const all = Array.from(text.matchAll(/Season\s+(\d+)/gi)).map(m => parseInt(m[1], 10));
+                season = all.length ? Math.max(...all) : null;
+            }
+            return { season, rows };
+        };
+
+        const fetchLeagueStandings = async () => {
+            let lastErr = null;
+            for (const relay of LEAGUE_RELAYS) {
+                try {
+                    const ctl = new AbortController();
+                    const timer = setTimeout(() => ctl.abort(), 9000);
+                    const res = await fetch(relay(LEAGUE_SITE), { signal: ctl.signal });
+                    clearTimeout(timer);
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    const parsed = parseStandingsHtml(await res.text());
+                    if (parsed.rows.length >= 2) return parsed;
+                    throw new Error('standings not found in page');
+                } catch (e) { lastErr = e; }
+            }
+            throw lastErr || new Error('no relay worked');
+        };
+
+        // The next unplayed week = games played so far + 1 (every team plays once per week)
+        const nextWeekFromRows = (rows) => rows.length ? Math.max(...rows.map(r => r.w + r.l)) + 1 : '';
+
+        // Draws the YouTube thumbnail (1280x720) on a canvas: game background, both team logos, the week and the records
+        const drawThumbnail = async (canvas, { imagePath, team1, team2, week, rec1, rec2 }) => {
+            const W = 1280, H = 720;
+            canvas.width = W; canvas.height = H;
+            const ctx = canvas.getContext('2d');
+            const load = (src) => new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null);
+                img.src = src;
+            });
+            const [bg, logo1, logo2, htl] = await Promise.all([
+                load(`${imagePath}background.png`),
+                team1 ? load(`${imagePath}${team1.logo}`) : null,
+                team2 ? load(`${imagePath}${team2.logo}`) : null,
+                load(`${imagePath}htl-logo.png`)
+            ]);
+            ctx.fillStyle = '#12082a'; ctx.fillRect(0, 0, W, H);
+            if (bg) {  // "cover" fit, like the game screen
+                const k = Math.max(W / bg.width, H / bg.height);
+                ctx.drawImage(bg, (W - bg.width * k) * 0.35, (H - bg.height * k) / 2, bg.width * k, bg.height * k);
+            }
+            const fit = (img, x, y, size) => {
+                const k = Math.min(size / img.width, size / img.height);
+                ctx.drawImage(img, x + (size - img.width * k) / 2, y + (size - img.height * k) / 2, img.width * k, img.height * k);
+            };
+            ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30;
+            if (logo1) fit(logo1, 10, 10, 540);
+            if (logo2) fit(logo2, W - 550, 10, 540);
+            ctx.restore();
+            const stroked = (text, cx, cy, size, maxW) => {
+                ctx.font = `900 ${size}px Poppins, Arial Black, Arial, sans-serif`;
+                let fs = size;
+                while (ctx.measureText(text).width > maxW && fs > 20) { fs -= 4; ctx.font = `900 ${fs}px Poppins, Arial Black, Arial, sans-serif`; }
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(8, fs / 9);
+                ctx.strokeStyle = 'black'; ctx.strokeText(text, cx, cy);
+                ctx.fillStyle = 'white'; ctx.fillText(text, cx, cy);
+            };
+            if (rec1) stroked(rec1, 280, 640, 130, 480);
+            if (rec2) stroked(rec2, W - 280, 640, 130, 480);
+            const wk = String(week || '').trim();
+            if (wk) {
+                stroked('WEEK', W / 2, 150, 54, 200);
+                stroked(wk.toUpperCase(), W / 2, 265, 170, 200);
+            }
+            if (htl) fit(htl, W / 2 - 95, 365, 190);
+        };
+
+        // Host tool (room-code screen): pick two teams + week, records are looked up automatically, then download the PNG
+        function ThumbnailMaker({ teamsData, imagePath, onClose }) {
+            const [t1, setT1] = useState('');
+            const [t2, setT2] = useState('');
+            const [week, setWeek] = useState('');
+            const [rec1, setRec1] = useState('');
+            const [rec2, setRec2] = useState('');
+            const [status, setStatus] = useState('');
+            const [busy, setBusy] = useState(false);
+            const canvasRef = useRef(null);
+            const team = (id) => teamsData.find(t => String(t.id) === String(id)) || null;
+
+            const lookup = async (a, b) => {
+                const A = team(a), B = team(b);
+                if (!A && !B) return;
+                setBusy(true); setStatus('Looking up records on hometownstrivialeague.lol...');
+                try {
+                    const { season, rows } = await fetchLeagueStandings();
+                    const find = (t) => t && rows.find(r => normTeamName(r.name) === normTeamName(t.name));
+                    const r1 = find(A), r2 = find(B);
+                    if (r1) setRec1(`${r1.w}-${r1.l}`);
+                    if (r2) setRec2(`${r2.w}-${r2.l}`);
+                    setWeek(String(nextWeekFromRows(rows)));
+                    const missing = [A && !r1 ? A.name : null, B && !r2 ? B.name : null].filter(Boolean);
+                    setStatus(`Season ${season || '?'} standings loaded.` + (missing.length ? ` Couldn't find: ${missing.join(', ')} - type the record in.` : ''));
+                } catch (e) {
+                    setStatus("Couldn't reach the league site right now - type the week and records in.");
+                }
+                setBusy(false);
+            };
+
+            useEffect(() => {
+                if (canvasRef.current) drawThumbnail(canvasRef.current, { imagePath, team1: team(t1), team2: team(t2), week, rec1, rec2 });
+            }, [t1, t2, week, rec1, rec2]);
+
+            const download = () => {
+                if (!canvasRef.current) return;
+                canvasRef.current.toBlob((blob) => {
+                    if (!blob) { setStatus('Could not create the image (a picture failed to load). Try again.'); return; }
+                    const a = document.createElement('a');
+                    const slug = (t) => (t ? t.name.replace(/[^A-Za-z0-9]+/g, '') : 'Team');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `HTL-Week${String(week || '').replace(/[^A-Za-z0-9]/g, '')}-${slug(team(t1))}-vs-${slug(team(t2))}.png`;
+                    document.body.appendChild(a); a.click(); a.remove();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+                }, 'image/png');
+            };
+
+            const field = { fontSize: '26px', padding: '10px 14px' };
+            return (
+                <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 10000}}>
+                    <div className="bg-gray-900 rounded-3xl border-8 flex gap-8" style={{borderColor: '#7d3ad4', padding: '36px', width: '2500px'}}>
+                        <div style={{width: '1280px'}}>
+                            <canvas ref={canvasRef} style={{width: '1280px', height: '720px', borderRadius: '12px', border: '3px solid #374151'}} />
+                            <div className="text-gray-400" style={{fontSize: '22px', marginTop: '10px'}}>1280 x 720 PNG - ready for YouTube</div>
+                        </div>
+                        <div className="flex flex-col gap-4 flex-1 text-white">
+                            <h2 className="font-bold" style={{fontSize: '48px'}}>Thumbnail Maker</h2>
+                            {[['Team 1', t1, setT1, (v) => lookup(v, t2)], ['Team 2', t2, setT2, (v) => lookup(t1, v)]].map(([label, val, set, after]) => (
+                                <label key={label} className="flex flex-col" style={{fontSize: '24px'}}>
+                                    {label}
+                                    <select value={val} onChange={(e) => { set(e.target.value); after(e.target.value); }} className="bg-gray-800 rounded border-2 border-gray-600" style={field}>
+                                        <option value="">Choose a team...</option>
+                                        {teamsData.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                    </select>
+                                </label>
+                            ))}
+                            <div className="flex gap-4">
+                                <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Week
+                                    <input value={week} onChange={(e) => setWeek(e.target.value)} className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
+                                </label>
+                                <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 1 record
+                                    <input value={rec1} onChange={(e) => setRec1(e.target.value)} placeholder="7-4" className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
+                                </label>
+                                <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 2 record
+                                    <input value={rec2} onChange={(e) => setRec2(e.target.value)} placeholder="5-6" className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
+                                </label>
+                            </div>
+                            <button onClick={() => lookup(t1, t2)} disabled={busy || (!t1 && !t2)} className="bg-gray-700 hover:bg-gray-600 text-white font-bold rounded-lg border-2 border-gray-500" style={{fontSize: '26px', padding: '12px'}}>
+                                ↻ Look up records again
+                            </button>
+                            <div className="text-yellow-300" style={{fontSize: '22px', minHeight: '60px'}}>{status}</div>
+                            <div className="flex gap-4 mt-auto">
+                                <button onClick={download} disabled={!t1 || !t2} className={`flex-1 font-bold rounded-lg border-4 border-black ${t1 && t2 ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gray-600 text-gray-400'}`} style={{fontSize: '34px', padding: '18px'}}>
+                                    ⬇ DOWNLOAD PNG
+                                </button>
+                                <button onClick={onClose} className="bg-red-500 hover:bg-red-600 text-white font-bold rounded-lg border-4 border-black" style={{fontSize: '34px', padding: '18px 40px'}}>
+                                    CLOSE
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
         function TriviaGame() {
             const [team1Score, setTeam1Score] = useState(0);
             const [team2Score, setTeam2Score] = useState(0);
@@ -760,6 +974,17 @@
             const [showPositionModal, setShowPositionModal] = useState(false);
             const [positionModalFor, setPositionModalFor] = useState(0);    // match number (0-based) the First/Second question is for
             const [playoffNoticeDismissed, setPlayoffNoticeDismissed] = useState(false);
+            const [teamRecords, setTeamRecords] = useState({});               // { teamId: '7-4' } shown under the logos (regular season)
+            const [recordsStatus, setRecordsStatus] = useState('');
+            const [showThumbMaker, setShowThumbMaker] = useState(false);
+            const audioGuardRef = React.useRef({});                          // stops the same sound from starting twice within a short window
+            // true only the first time a given sound is asked for within `ms` milliseconds
+            const shouldPlayOnce = (name, ms) => {
+                const now = Date.now();
+                if (now - (audioGuardRef.current[name] || 0) < ms) return false;
+                audioGuardRef.current[name] = now;
+                return true;
+            };
             
             // All 16 teams data
             const teamsData = [
@@ -1049,6 +1274,7 @@
                                 setIsPlaying(gameState.isPlaying || false);
                                 setTrackPosition(gameState.trackPosition ?? 0);
                                 setSoundbarVolume(gameState.soundbarVolume ?? 1);
+                                setTeamRecords(gameState.teamRecords || {});
                                 if (gameState.seriesInfo) {
                                     setSeasonType(gameState.seriesInfo.seasonType || 'regular');
                                     setTotalMatches(gameState.seriesInfo.totalMatches || 1);
@@ -1156,10 +1382,12 @@
                                     setBackgroundFading(true);
                                     setShowIntro(true);
                                     // Play Team Announcement audio at white flash peak
-                                    const announceAudio = new Audio(`${audioPath}Team Announcement.mp3`);
-                                    announceAudio.volume = 1.0;
-                                    teamAnnounceAudioRef.current = announceAudio;
-                                    announceAudio.play().catch(() => {});
+                                    if (shouldPlayOnce('announce', 25000)) {
+                                        const announceAudio = new Audio(`${audioPath}Team Announcement.mp3`);
+                                        announceAudio.volume = 1.0;
+                                        teamAnnounceAudioRef.current = announceAudio;
+                                        announceAudio.play().catch(() => {});
+                                    }
                                     setTimeout(() => { if (!streamSkipRef.current) setWhiteFading(false); }, 1500);
                                     setTimeout(() => { if (!streamSkipRef.current) setBackgroundFading(false); }, 3500);
                                     setTimeout(() => { if (!streamSkipRef.current) setIntroStep(1); }, 6000);
@@ -1191,10 +1419,13 @@
                             setBackgroundFading(true);
                             setShowIntro(true);
                             try {
-                                const announceAudio = new Audio(`${audioPath}Team Announcement.mp3`);
-                                announceAudio.volume = 1.0;
-                                teamAnnounceAudioRef.current = announceAudio;
-                                announceAudio.play().catch(() => {});
+                                if (teamAnnounceAudioRef.current) { teamAnnounceAudioRef.current.pause(); teamAnnounceAudioRef.current = null; }
+                                if (shouldPlayOnce('announce', 25000)) {
+                                    const announceAudio = new Audio(`${audioPath}Team Announcement.mp3`);
+                                    announceAudio.volume = 1.0;
+                                    teamAnnounceAudioRef.current = announceAudio;
+                                    announceAudio.play().catch(() => {});
+                                }
                             } catch (e) {}
                             setTimeout(() => { if (!streamSkipRef.current) setWhiteFading(false); }, 1500);
                             setTimeout(() => { if (!streamSkipRef.current) setBackgroundFading(false); }, 3500);
@@ -1241,7 +1472,7 @@
                 closestToQuestions, bottomsUpQuestion, tieBreakerBottomsUpQuestion,
                 selectedShootoutQuestion, selectedTieBreakerShootoutQuestion,
                 // Multi-match sessions / playoffs
-                seasonType, totalMatches, seriesMatchIndex, seriesWins, seriesRecorded, playoffNoticeDismissed
+                seasonType, totalMatches, seriesMatchIndex, seriesWins, seriesRecorded, playoffNoticeDismissed, teamRecords
             ]);
             
             // Intro animation sequence
@@ -1266,7 +1497,7 @@
 
             // Stream plays Winner.mp3 when winner screen appears
             useEffect(() => {
-                if (userMode === 'stream' && showWinnerScreen) {
+                if (userMode === 'stream' && showWinnerScreen && shouldPlayOnce('winner', 20000)) {
                     const winnerAudio = new Audio(`${audioPath}Winner.mp3`);
                     winnerAudio.volume = 1.0;
                     winnerAudio.play().catch(() => {});
@@ -1536,6 +1767,7 @@
                 setBottomsUpShowModal(false);
                 setBottomsUpHostInput('');
 
+                setTeamRecords(gameState.teamRecords || {});
                 if (gameState.seriesInfo) {
                     setSeasonType(gameState.seriesInfo.seasonType || 'regular');
                     setTotalMatches(gameState.seriesInfo.totalMatches || 1);
@@ -1750,23 +1982,18 @@
                 setTimerRunning(true);
             };
 
+            // Resets the active team's clock to the full time it started this question with
+            // (30, 45 if Extra Time was used, 15 for a steal, 10 for a Double Dip second guess,
+            // 30 for a Bottoms Up turn) and starts counting down again right away.
             const handleResetTimer = () => {
-                setTimerRunning(false);
-                if (stealAttempted) {
-                    // During a steal, always reset to 15 regardless of powerups
-                    if (activeTimer === 1) {
-                        setTeam1Time(15);
-                    } else {
-                        setTeam2Time(15);
-                    }
-                } else {
-                    // Normal turn - reset to original time for that team
-                    if (activeTimer === 1) {
-                        setTeam1Time(team1ExtraTimeUsed ? 45 : 30);
-                    } else {
-                        setTeam2Time(team2ExtraTimeUsed ? 45 : 30);
-                    }
-                }
+                const bottomsUpNow = (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'bottomsUp';
+                let full;
+                if (bottomsUpNow) full = 30;
+                else if (doubleDipActive && doubleDipSecondGuess) full = 10;
+                else if (stealAttempted) full = 15;
+                else full = (activeTimer === 1 ? team1ExtraTimeUsed : team2ExtraTimeUsed) ? 45 : 30;
+                if (activeTimer === 1) setTeam1Time(full); else setTeam2Time(full);
+                setTimerRunning(true);
             };
 
             const handleCorrect = () => {
@@ -2061,6 +2288,7 @@
                 if (selectedTeam1 && selectedTeam2) {
                     if (seasonType === 'playoff' && !getSeedPair(selectedTeam1, selectedTeam2)) return;
                     setWizardMatchIdx(0);
+                    if (seasonType === 'regular') loadRecordsFor([selectedTeam1, selectedTeam2]);
                     setAdminStep(2);
                 }
             };
@@ -2073,6 +2301,24 @@
             };
 
             // ================== MULTI-MATCH SESSIONS + PLAYOFFS ==================
+
+            // Looks up both teams' records on the league site (regular-season recap). Always editable afterwards.
+            const loadRecordsFor = async (teams) => {
+                setRecordsStatus('Looking up records on hometownstrivialeague.lol...');
+                try {
+                    const { season, rows } = await fetchLeagueStandings();
+                    const next = {};
+                    const missing = [];
+                    teams.filter(Boolean).forEach(t => {
+                        const r = rows.find(x => normTeamName(x.name) === normTeamName(t.name));
+                        if (r) next[t.id] = `${r.w}-${r.l}`; else missing.push(t.name);
+                    });
+                    setTeamRecords(prev => ({ ...prev, ...next }));
+                    setRecordsStatus(`Season ${season || '?'} standings loaded.` + (missing.length ? ` Couldn't find: ${missing.join(', ')} - type the record in.` : ''));
+                } catch (e) {
+                    setRecordsStatus("Couldn't reach the league site - type the records in (or leave blank).");
+                }
+            };
 
             // Move the first n items of a list to the end (used so each match in a session gets a
             // different block of 5 Closest To questions).
@@ -2407,7 +2653,7 @@
                         isPlaying,
                         trackPosition,
                         soundbarVolume,
-                        seriesInfo: { seasonType, totalMatches, matchIndex: seriesMatchIndex, wins: seriesWins, recorded: seriesRecorded, noticeDismissed: playoffNoticeDismissed },
+                        teamRecords, seriesInfo: { seasonType, totalMatches, matchIndex: seriesMatchIndex, wins: seriesWins, recorded: seriesRecorded, noticeDismissed: playoffNoticeDismissed },
                     };
                     
                     // Lighter syncing: after the first full send, only the fields that CHANGED are sent
@@ -2600,21 +2846,6 @@
                 if (activeQ && selectedMatch) {
                     markQuestionUsed('BOTTOMS UP', selectedMatch.name, null, activeQ.colIndex);
                 }
-            };
-
-            // Double-click guard for the host's control buttons. The same button often changes meaning
-            // after one click (e.g. REVEAL QUESTION becomes REVEAL ANSWER), so a second quick click
-            // (a nervous double-click, or clicking again because the screen looked slow) would trigger
-            // the NEXT action by accident. Any click arriving within 700ms of the previous one is ignored.
-            const lastHostClickRef = React.useRef(0);
-            const guardDoubleClick = (e) => {
-                const now = Date.now();
-                if (now - lastHostClickRef.current < 700) {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    return;
-                }
-                if (e.target && e.target.closest && e.target.closest('button')) lastHostClickRef.current = now;
             };
 
             const handleBottomsUpStartTimer = () => {
@@ -3386,6 +3617,18 @@
                 || winsFor(selectedTeam2) >= matchesNeededToWin
                 || seriesMatchIndex + 1 >= totalMatches;
 
+            // Multi-match sessions: the HTL logo fades back and shows "GAME n" with the series count (e.g. 1 - 0)
+            const seriesLogoOpacity = totalMatches > 1 ? 0.3 : 1;
+            const seriesBadge = totalMatches > 1 ? (
+                <div className="absolute flex flex-col items-center justify-center text-center font-black text-white" style={{
+                    left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 5, pointerEvents: 'none',
+                    WebkitTextStroke: '5px black', paintOrder: 'stroke fill', textShadow: '0 6px 24px rgba(0,0,0,0.8)', lineHeight: 1.05
+                }}>
+                    <div style={{fontSize: '120px'}}>GAME {seriesMatchIndex + 1}</div>
+                    <div style={{fontSize: '170px'}}>{winsFor(selectedTeam1)} - {winsFor(selectedTeam2)}</div>
+                </div>
+            ) : null;
+
             // PLAYOFFS ONLY: has one team fallen out of reach? A team is out of reach when even winning every
             // remaining question (plus its unused Point Doubler, plus the 2-point bonus if it hasn't been played)
             // could not get it level with the leader - a tie would still go to the tiebreaker, so only
@@ -3408,6 +3651,12 @@
                 if (team2Score > max1) return 2;
                 return null;
             })();
+
+            // The faint "Version Update" stamp (bottom-right) is for Host / Main screens only - never the Stream
+            useEffect(() => {
+                const el = document.getElementById('htl-version');
+                if (el) el.style.display = userMode === 'stream' ? 'none' : 'block';
+            }, [userMode]);
 
             // Load the shared seeds (Championship / Chump + seed number) once for the host. Falls back to the
             // copy saved in this browser if the shared database can't be read.
@@ -3579,11 +3828,20 @@
                         <div className="bg-gray-900 rounded-lg p-8 border-4" style={{borderColor: '#7d3ad4'}}>
                             <h2 className="text-4xl font-bold text-white mb-6 text-center">ADMIN LOGIN</h2>
                             <input
-                                type="password"
+                                type="text"
+                                name="htl-access-code"
+                                autoComplete="off"
+                                autoCorrect="off"
+                                autoCapitalize="off"
+                                spellCheck={false}
+                                data-lpignore="true"
+                                data-1p-ignore="true"
+                                data-form-type="other"
                                 value={adminPassword}
                                 onChange={(e) => setAdminPassword(e.target.value)}
                                 onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
                                 className="w-full text-center text-3xl font-bold bg-gray-800 text-white rounded p-4 mb-4"
+                                style={{WebkitTextSecurity: 'disc', textSecurity: 'disc'}}
                                 placeholder="Enter Password"
                                 autoFocus
                             />
@@ -3637,6 +3895,7 @@
                         backgroundPosition: '35% center',
                         backgroundRepeat: 'no-repeat'
                     }}>
+                        {showThumbMaker && <ThumbnailMaker teamsData={teamsData} imagePath={imagePath} onClose={() => setShowThumbMaker(false)} />}
                         {/* Room Check Modal */}
                         {showRoomCheckModal && roomCheckData && (
                             <div className="absolute inset-0 z-50 flex items-center justify-center" style={{
@@ -3827,6 +4086,14 @@
                             >
                                 {userMode === 'host' ? 'CREATE ROOM' : 'JOIN ROOM'}
                             </button>
+                            {userMode === 'host' && (
+                                <button
+                                    onClick={() => setShowThumbMaker(true)}
+                                    className="w-full mt-3 bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-2xl"
+                                >
+                                    THUMBNAIL MAKER
+                                </button>
+                            )}
                             {userMode === 'host' && (
                                 <button
                                     onClick={() => {
@@ -4519,6 +4786,24 @@
                                         </div>
                                     </div>
 
+                                    {seasonType === 'regular' && (
+                                        <div className="bg-gray-800 rounded-lg p-4 border-4 mb-6" style={{borderColor: '#7d3ad4'}}>
+                                            <div className="flex items-center gap-4 flex-wrap">
+                                                <span className="text-purple-400 font-bold text-xl">Team records (shown under each logo):</span>
+                                                {[selectedTeam1, selectedTeam2].map((t, i) => t && (
+                                                    <label key={t.id} className="flex items-center gap-2 text-white font-bold">
+                                                        {t.name}
+                                                        <input value={teamRecords[t.id] || ''} placeholder="W-L"
+                                                            onChange={(e) => setTeamRecords(prev => ({ ...prev, [t.id]: e.target.value }))}
+                                                            className="bg-gray-900 text-white rounded border-2 border-gray-600 p-1 text-center" style={{width: '90px'}} />
+                                                    </label>
+                                                ))}
+                                                <button onClick={() => loadRecordsFor([selectedTeam1, selectedTeam2])}
+                                                    className="bg-gray-700 hover:bg-gray-600 text-white font-bold py-1 px-3 rounded border-2 border-gray-500 text-sm">↻ Look up again</button>
+                                            </div>
+                                            {recordsStatus && <p className="text-gray-400 text-sm mt-2">{recordsStatus}</p>}
+                                        </div>
+                                    )}
                                     <div className="flex gap-6 items-start" style={{overflowX: 'auto'}}>
                                     {seriesMatches.slice(0, totalMatches).map((cfg, mi) => cfg && (
                                     <div key={mi} style={{flex: '1 1 0', minWidth: totalMatches > 1 ? '880px' : '0'}}>
@@ -5016,6 +5301,17 @@
                                     objectFit: 'contain'
                                 }}
                             />
+                            {seasonType === 'regular' && teamRecords[selectedTeam1?.id] && (
+                                <div style={{
+                                    position: 'absolute', left: 0, right: 0, top: 'calc(100% - 30px)', textAlign: 'center',
+                                    transform: 'perspective(1000px) rotateY(15deg)',
+                                    fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
+                                    WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
+                                    opacity: introStep >= 2 ? 1 : 0, transition: 'opacity 1.2s ease-in'
+                                }}>
+                                    {teamRecords[selectedTeam1.id]}
+                                </div>
+                            )}
                         </div>
                         
                         {/* Team 2 Logo */}
@@ -5039,6 +5335,17 @@
                                     objectFit: 'contain'
                                 }}
                             />
+                            {seasonType === 'regular' && teamRecords[selectedTeam2?.id] && (
+                                <div style={{
+                                    position: 'absolute', left: 0, right: 0, top: 'calc(100% - 30px)', textAlign: 'center',
+                                    transform: 'perspective(1000px) rotateY(-15deg)',
+                                    fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
+                                    WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
+                                    opacity: introStep >= 3 ? 1 : 0, transition: 'opacity 1.2s ease-in'
+                                }}>
+                                    {teamRecords[selectedTeam2.id]}
+                                </div>
+                            )}
                         </div>
             
                         {/* Versus Graphic */}
@@ -5100,8 +5407,9 @@
                                             src={`${imagePath}htl-logo.png`}
                                             alt="HTL - Hometown Trivia League" 
                                             className="object-contain"
-                                            style={{height: '560px'}}
+                                            style={{height: '560px', opacity: seriesLogoOpacity}}
                                         />
+                                        {seriesBadge}
                                     
                                         <div className="absolute score-text font-black text-black" style={{
                                             right: '23%',
@@ -5351,6 +5659,17 @@
                                     opacity: showWinnerScreen ? 0.9 : ((currentRound === 7 || currentRound === 14 || activeTeam === 1) ? 0.9 : 0.1)
                                 }}
                             />
+                            {seasonType === 'regular' && teamRecords[selectedTeam1?.id] && (
+                                <div style={{
+                                    position: 'absolute', left: 0, right: 0, top: 'calc(100% - 30px)', textAlign: 'center',
+                                    transform: 'perspective(1000px) rotateY(15deg)',
+                                    fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
+                                    WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
+                                    opacity: showWinnerScreen ? 0 : 0.95, transition: 'opacity 1.2s ease-in', pointerEvents: 'none'
+                                }}>
+                                    {teamRecords[selectedTeam1.id]}
+                                </div>
+                            )}
                         </div>
                         
                         <div className="absolute" style={{
@@ -5371,6 +5690,17 @@
                                     opacity: showWinnerScreen ? 0.9 : ((currentRound === 7 || currentRound === 14 || activeTeam === 2 || powerupPhase || (currentQuestion === 1 && !showQuestion)) ? 0.9 : 0.1)
                                 }}
                             />
+                            {seasonType === 'regular' && teamRecords[selectedTeam2?.id] && (
+                                <div style={{
+                                    position: 'absolute', left: 0, right: 0, top: 'calc(100% - 30px)', textAlign: 'center',
+                                    transform: 'perspective(1000px) rotateY(-15deg)',
+                                    fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
+                                    WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
+                                    opacity: showWinnerScreen ? 0 : 0.95, transition: 'opacity 1.2s ease-in', pointerEvents: 'none'
+                                }}>
+                                    {teamRecords[selectedTeam2.id]}
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -5635,6 +5965,20 @@
                                     ⚙ Bonus override
                                 </button>
                             )}
+                            {/* Playoffs: after "Keep Playing This Match", the host can still end it from here */}
+                            {seasonType === 'playoff' && playoffNoticeDismissed && team1Score !== team2Score && (
+                                <button
+                                    onClick={() => {
+                                        const leader = team1Score > team2Score ? 1 : 2;
+                                        const leaderName = leader === 1 ? selectedTeam1?.name : selectedTeam2?.name;
+                                        if (window.confirm(`End this match now and award it to ${leaderName}?`)) endMatchEarly(leader);
+                                    }}
+                                    className="bg-red-900 hover:bg-red-800 text-red-100 font-bold rounded-lg border-2 border-red-500"
+                                    style={{fontSize: '24px', padding: '10px 20px', opacity: 0.9}}
+                                >
+                                    ■ End match now
+                                </button>
+                            )}
                         </div>
                     )}
 
@@ -5837,7 +6181,7 @@
                                     <button onClick={() => setPlayoffNoticeDismissed(true)}
                                         className="bg-gray-600 hover:bg-gray-500 text-white font-bold rounded-lg border-4 border-black"
                                         style={{fontSize: '32px', padding: '12px 36px'}}>
-                                        KEEP PLAYING
+                                        KEEP PLAYING THIS MATCH
                                     </button>
                                 </div>
                             )}
@@ -6091,8 +6435,9 @@
                                 src={`${imagePath}htl-logo.png`}
                                 alt="HTL - Hometown Trivia League" 
                                 className="object-contain"
-                                style={{height: '560px'}}
+                                style={{height: '560px', opacity: seriesLogoOpacity, transition: 'opacity 1s'}}
                             />
+                            {seriesBadge}
                         
                             <div className={`absolute ${showWinnerScreen ? 'winner-score-right' : ''}`} style={{right: '23%'}}>
                                 <div className="score-text font-black text-black" style={{
@@ -6564,7 +6909,7 @@
                                 </div>
 
                                 {userMode === 'host' && (
-                                    <div className="flex gap-4" onClickCapture={guardDoubleClick} style={{
+                                    <div className="flex gap-4" style={{
                                         position: 'relative',
                                         zIndex: 50,
                                         // While the Shootout board is expanded, this button row is pulled back
