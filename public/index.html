@@ -2074,6 +2074,7 @@
             };
 
             // Broadcast game state to all streams
+            const lastBroadcastRef = React.useRef(null);
             const broadcastGameState = () => {
                 if (userMode === 'host' && roomCode) {
                     const gameState = {
@@ -2157,8 +2158,24 @@
                         soundbarVolume,
                     };
                     
-                    database.ref(`rooms/${roomCode}/gameState`).set(gameState);
-                    database.ref(`rooms/${roomCode}/lastActive`).set(Date.now());
+                    // Lighter syncing: after the first full send, only the fields that CHANGED are sent
+                    // (e.g. a timer tick sends 2 numbers instead of the entire game). A full send is
+                    // repeated every 15 seconds so the Stream always self-heals if it missed anything.
+                    const now = Date.now();
+                    const gsRef = database.ref(`rooms/${roomCode}/gameState`);
+                    const prev = lastBroadcastRef.current;
+                    const nextJson = {};
+                    Object.keys(gameState).forEach(k => { nextJson[k] = JSON.stringify(gameState[k]); });
+                    if (!prev || prev.room !== roomCode || now - prev.fullAt > 15000) {
+                        gsRef.set(gameState);
+                        database.ref(`rooms/${roomCode}/lastActive`).set(now);
+                        lastBroadcastRef.current = { room: roomCode, fullAt: now, json: nextJson };
+                    } else {
+                        const changed = {};
+                        Object.keys(gameState).forEach(k => { if (nextJson[k] !== prev.json[k]) changed[k] = gameState[k]; });
+                        if (Object.keys(changed).length > 0) gsRef.update(changed);
+                        lastBroadcastRef.current = { room: roomCode, fullAt: prev.fullAt, json: nextJson };
+                    }
                 }
             };
             
@@ -2333,6 +2350,21 @@
                 }
             };
 
+            // Double-click guard for the host's control buttons. The same button often changes meaning
+            // after one click (e.g. REVEAL QUESTION becomes REVEAL ANSWER), so a second quick click
+            // (a nervous double-click, or clicking again because the screen looked slow) would trigger
+            // the NEXT action by accident. Any click arriving within 700ms of the previous one is ignored.
+            const lastHostClickRef = React.useRef(0);
+            const guardDoubleClick = (e) => {
+                const now = Date.now();
+                if (now - lastHostClickRef.current < 700) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    return;
+                }
+                if (e.target && e.target.closest && e.target.closest('button')) lastHostClickRef.current = now;
+            };
+
             const handleBottomsUpStartTimer = () => {
                 if (bottomsUpActiveTeam === 1) {
                     setTeam1Time(30);
@@ -2411,7 +2443,9 @@
                     usedValues: bottomsUpUsedAnswers, answers: activeBottomsUpQuestion?.answers
                 });
                 if (noGuessClinchWinner) {
-                    finishBottomsUpRound(noGuessClinchWinner);
+                    // Don't award anything yet: go to the 'between' phase so the "out of reach" notice
+                    // shows on Host + Stream and the host confirms with a button.
+                    setBottomsUpPhase('between');
                     return;
                 }
                 
@@ -2447,7 +2481,7 @@
                 setBottomsUpAnimationValue(0);
                 setBottomsUpHostInput('');
                 
-                // Early finish (in case NEXT TURN is clicked before the automatic finish kicks in)
+                // Early finish: this is the host's confirmation of the "out of reach" notice
                 const nextTurnClinchWinner = getBottomsUpClinchWinner({
                     score1: bonusScore1, score2: bonusScore2,
                     turnNumber: bottomsUpTurnNumber, teamJustWent: bottomsUpActiveTeam,
@@ -3081,20 +3115,16 @@
                 return () => clearTimeout(t);
             }, [hostWarning]);
 
-            // Host: automatically end Bottoms Up the moment one team can no longer even tie.
-            // Waits ~2 seconds on the finished turn so everyone sees the final scores, then awards the
-            // match points and moves on (same as clicking through the end of the round normally).
-            useEffect(() => {
-                if (userMode !== 'host' || bottomsUpPhase !== 'between' || !isBottomsUpRound) return;
-                const clinchWinner = getBottomsUpClinchWinner({
+            // "Out of reach": during the 'between' phase of a Bottoms Up round, work out whether one team
+            // can no longer even tie. Nothing is awarded automatically - Host and Stream both show a notice
+            // and the host presses a confirm button (which runs handleBottomsUpNextTurn -> finishBottomsUpRound).
+            const bottomsUpClinchWinnerNow = (isBottomsUpRound && bottomsUpPhase === 'between')
+                ? getBottomsUpClinchWinner({
                     score1: bonusScore1, score2: bonusScore2,
                     turnNumber: bottomsUpTurnNumber, teamJustWent: bottomsUpActiveTeam,
                     usedValues: bottomsUpUsedAnswers, answers: activeBottomsUpQuestion?.answers
-                });
-                if (!clinchWinner) return;
-                const t = setTimeout(() => finishBottomsUpRoundRef.current(clinchWinner), 2000);
-                return () => clearTimeout(t);
-            }, [userMode, bottomsUpPhase, isBottomsUpRound, bonusScore1, bonusScore2, bottomsUpTurnNumber, bottomsUpActiveTeam, bottomsUpUsedAnswers, activeBottomsUpQuestion]);
+                })
+                : null;
 
             // Shuffle shootout answers when match is selected - also re-shuffles
             // whenever a different Shootout question gets selected mid-match (e.g.
@@ -3202,7 +3232,7 @@
             }
             
             // Room Code Entry Screen
-            if (adminAuthenticated && showRoomSetup && userMode && !isConnected) {
+            if (adminAuthenticated && showRoomSetup && userMode && !isConnected && !showTestMode) {
                 return (
                     <div className="relative w-full h-full overflow-hidden flex items-center justify-center" style={{
                         backgroundImage: `url(${imagePath}background.png)`,
@@ -5058,6 +5088,22 @@
                         </div>
                     )}
 
+                    {/* BOTTOMS UP "out of reach" notice - shown on Host AND Stream. The host confirms with a button. */}
+                    {gameStarted && bottomsUpClinchWinnerNow && !showWinnerScreen && (
+                        <div className="absolute font-bold text-white text-center" style={{
+                            top: '930px', left: '50%', transform: 'translateX(-50%)', zIndex: 70,
+                            backgroundColor: 'rgba(17,24,39,0.97)', border: '6px solid #f59e0b', borderRadius: '24px',
+                            padding: '24px 48px', fontSize: '48px', width: '1300px', lineHeight: 1.2
+                        }}>
+                            <div style={{color: '#f87171'}}>
+                                {(bottomsUpClinchWinnerNow === 1 ? selectedTeam2?.name : selectedTeam1?.name) || 'This team'} CAN'T CATCH UP - OUT OF REACH
+                            </div>
+                            <div style={{fontSize: '38px', color: '#fde047', marginTop: '10px'}}>
+                                {(bottomsUpClinchWinnerNow === 1 ? selectedTeam1?.name : selectedTeam2?.name) || 'The leader'} wins Bottoms Up with the higher score
+                            </div>
+                        </div>
+                    )}
+
                     {/* HOST ONLY: red warning banner (missing question, auto-recovery notices, etc.) */}
                     {userMode === 'host' && gameStarted && (bottomsUpQuestionMissing || hostWarning) && (
                         <div className="absolute font-bold text-white text-center" style={{
@@ -5970,7 +6016,7 @@
                                 </div>
 
                                 {userMode === 'host' && (
-                                    <div className="flex gap-4" style={{
+                                    <div className="flex gap-4" onClickCapture={guardDoubleClick} style={{
                                         position: 'relative',
                                         zIndex: 50,
                                         // While the Shootout board is expanded, this button row is pulled back
@@ -6026,9 +6072,15 @@
                                                         </button>
                                                     </>
                                                 ) : bottomsUpPhase === 'between' ? (
-                                                    <button onClick={handleBottomsUpNextTurn} className="bg-purple-500 hover:bg-purple-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black transition text-xl">
-                                                        NEXT TURN
-                                                    </button>
+                                                    bottomsUpClinchWinnerNow ? (
+                                                        <button onClick={handleBottomsUpNextTurn} className="bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black transition text-xl">
+                                                            AWARD {bottomsUpClinchWinnerNow === 1 ? (selectedTeam1?.name || 'TEAM 1') : (selectedTeam2?.name || 'TEAM 2')} &amp; CONTINUE
+                                                        </button>
+                                                    ) : (
+                                                        <button onClick={handleBottomsUpNextTurn} className="bg-purple-500 hover:bg-purple-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black transition text-xl">
+                                                            NEXT TURN
+                                                        </button>
+                                                    )
                                                 ) : null
                                             ) : (
                                                 // Shootout Buttons
