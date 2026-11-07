@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 8:45 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 8:54 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -692,9 +692,9 @@
         // ================== PLAYOFF BRACKET (8 teams: 1v8, 4v5, 2v7, 3v6 -> semifinals -> final) ==================
         const BRACKET_SLOT_ORDER = [1, 8, 4, 5, 2, 7, 3, 6];   // seed shown in each of the 8 first-round slots, top to bottom
 
-        // Intro timing. With a bracket scene the logos fly in 2 seconds later and everything after is pushed back by 2 seconds.
+        // Intro timing. With a bracket scene the logos fly in at 10 seconds and everything after is pushed back by 4 seconds.
         const introPlan = (withBracket) => withBracket
-            ? { bg: 1200, steps: [8000, 9500, 11000, 12000, 13000], end: 14000 }
+            ? { bg: 1200, steps: [10000, 11500, 13000, 14000, 15000], end: 16000 }
             : { bg: 3500, steps: [6000, 7500, 9000, 10000, 11000], end: 12000 };
 
         // bySeed: { 1: {id, name, logo, color, elim, seed}, ... } where elim is the time the team was marked eliminated (0/undefined = still alive).
@@ -1666,7 +1666,7 @@
                     setTimeout(() => setBracketStage(1), 3300),
                     setTimeout(() => setBracketStage(2), 4800),
                     setTimeout(() => setBracketStage(3), 6000),
-                    setTimeout(() => setBracketStage(4), 7300)
+                    setTimeout(() => setBracketStage(4), 9300)
                 ];
                 return () => timers.forEach(clearTimeout);
             }, [showIntro]);
