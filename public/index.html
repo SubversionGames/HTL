@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 7:22 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 8:16 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -692,9 +692,20 @@
         // A compact drop-down that lives inside the page (the browser's own pop-up menu gets blown up by the 3200x1800 canvas scaling).
         function DropSelect({ value, options, placeholder, onChange, fontSize = 26 }) {
             const [open, setOpen] = useState(false);
+            const boxRef = useRef(null);
             const cur = options.find(o => String(o.value) === String(value));
+            // Close when you click anywhere outside the menu (or press Escape). Uses the whole document, so
+            // other buttons (like CLOSE) still receive the same click.
+            useEffect(() => {
+                if (!open) return;
+                const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+                const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+                document.addEventListener('mousedown', onDown, true);
+                document.addEventListener('keydown', onKey);
+                return () => { document.removeEventListener('mousedown', onDown, true); document.removeEventListener('keydown', onKey); };
+            }, [open]);
             return (
-                <div style={{position: 'relative', width: '100%', minWidth: 0}}>
+                <div ref={boxRef} style={{position: 'relative', width: '100%', minWidth: 0}}>
                     <button type="button" onClick={() => setOpen(o => !o)}
                         className="bg-gray-800 text-white rounded border-2 border-gray-600 w-full flex items-center justify-between text-left"
                         style={{fontSize: fontSize + 'px', padding: '10px 14px'}}>
@@ -703,10 +714,9 @@
                     </button>
                     {open && (
                         <>
-                            <div onClick={() => setOpen(false)} style={{position: 'fixed', inset: 0, zIndex: 10001}} />
-                            <div className="bg-gray-800 border-2 border-gray-500 rounded" style={{position: 'absolute', left: 0, right: 0, top: '100%', marginTop: '4px', zIndex: 10002, maxHeight: '420px', overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.6)'}}>
+                            <div className="bg-gray-800 border-2 border-gray-500 rounded" style={{position: 'absolute', left: 0, right: 0, top: '100%', marginTop: '4px', zIndex: 10002, maxHeight: '280px', overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.6)'}}>
                                 {options.map(o => (
-                                    <div key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+                                    <div key={o.value} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(o.value); setOpen(false); }}
                                         className="text-white hover:bg-purple-700 cursor-pointer"
                                         style={{fontSize: (fontSize - 2) + 'px', padding: '8px 14px', backgroundColor: String(o.value) === String(value) ? '#4c1d95' : undefined}}>
                                         {o.label}
@@ -777,11 +787,11 @@
                         <div className="flex flex-col gap-4 flex-1 text-white" style={{minWidth: 0}}>
                             <h2 className="font-bold" style={{fontSize: '48px'}}>Thumbnail Maker</h2>
                             {[['Team 1', t1, setT1, (v) => lookup(v, t2)], ['Team 2', t2, setT2, (v) => lookup(t1, v)]].map(([label, val, set, after]) => (
-                                <label key={label} className="flex flex-col" style={{fontSize: '24px'}}>
+                                <div key={label} className="flex flex-col" style={{fontSize: '24px'}}>
                                     {label}
                                     <DropSelect value={val} placeholder="Choose a team..." onChange={(v) => { set(v); after(v); }}
                                         options={teamsData.map(t => ({ value: t.id, label: t.name }))} />
-                                </label>
+                                </div>
                             ))}
                             <div className="flex gap-4">
                                 <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Week
@@ -1000,6 +1010,7 @@
             const [seriesWins, setSeriesWins] = useState({});               // { teamId: matches won }
             const [seriesRecorded, setSeriesRecorded] = useState([]);       // match numbers whose winner is already counted
             const [leagueSeeds, setLeagueSeeds] = useState({});             // { teamId: { bracket: 'champ'|'chump', seed: number } }
+            const [scoreEdit, setScoreEdit] = useState(null);                  // {team, value} while the HTL score-edit window is open
             const [seedsStatus, setSeedsStatus] = useState('');             // note shown in the seeding screen (e.g. save problems)
             const [showSeedEditor, setShowSeedEditor] = useState(false);
             const [showPositionModal, setShowPositionModal] = useState(false);
@@ -1989,7 +2000,7 @@
                     if (activeBonusType === 'closestTo') {
                         setTeam1Time(30);
                         setTeam2Time(30);
-                        const currentQ = closestToQuestions[bonusQuestionIndex];
+                        const currentQ = (currentRound === 14 && closestToQuestions.length >= 10 ? closestToQuestions.slice(5) : closestToQuestions)[bonusQuestionIndex];
                         if (currentQ && selectedMatch) {
                             markQuestionUsed('CLOSEST TO', selectedMatch.name, currentQ.rowIndex);
                         }
@@ -2758,7 +2769,7 @@
                 
                 // Step 3: Calculate and award winner 2 seconds after distances appear
                 setTimeout(() => {
-                    const currentQuestion = closestToQuestions[bonusQuestionIndex];
+                    const currentQuestion = (currentRound === 14 && closestToQuestions.length >= 10 ? closestToQuestions.slice(5) : closestToQuestions)[bonusQuestionIndex];
                     const correctAnswer = currentQuestion.answer;
                     const guess1 = parseCleanNumber(team1Guess) || 0;
                     const guess2 = parseCleanNumber(team2Guess) || 0;
@@ -3419,7 +3430,8 @@
             // shootoutQuestions is already loaded as state from the Sheets fetch
             const legacyClosestToQuestions = closestToQuestions;
             const shootoutQuestion = selectedShootoutQuestion || (shootoutQuestions.length > 0 ? shootoutQuestions[0] : null);
-            const tieBreakerClosestToQuestions = closestToQuestions;
+            // Tiebreaker uses the NEXT 5 questions (6-10), so it never repeats the bonus round's questions
+            const tieBreakerClosestToQuestions = closestToQuestions.length >= 10 ? closestToQuestions.slice(5) : closestToQuestions;
             const tieBreakerShootoutQuestion = selectedTieBreakerShootoutQuestion || (shootoutQuestions.length > 0 ? shootoutQuestions[0] : null);
             // Active Bottoms Up question - uses tiebreaker version for round 14
             const activeBottomsUpQuestion = (currentRound === 14 ? tieBreakerBottomsUpQuestion : bottomsUpQuestion) || bottomsUpQuestion;
@@ -3700,6 +3712,24 @@
                 return null;
             })();
 
+            // HOST ONLY: plain-language line about the score situation (all matches, regular rounds only)
+            const catchUpInfo = (() => {
+                if (!gameStarted || showWinnerScreen || isTieBreaker || currentRound >= 14) return null;
+                const roundsDone = currentRound <= 7 ? currentRound - 1 : currentRound - 2;
+                const played = roundsDone * 2 + (currentQuestion - 1);
+                const remaining = Math.max(0, 24 - played);
+                const bonusLeft = currentRound <= 7 ? 2 : 0;
+                const available = remaining + bonusLeft;
+                const diff = Math.abs(team1Score - team2Score);
+                if (diff === 0) return `Tied  -  ${available} points still available`;
+                const trailer = team1Score < team2Score ? selectedTeam1 : selectedTeam2;
+                const trailPw = team1Score < team2Score ? team1Powerups : team2Powerups;
+                const trailAct = team1Score < team2Score ? team1DoublerActive : team2DoublerActive;
+                const dbl = (trailPw && trailPw.pointDoubler ? 1 : 0) + (trailAct ? 1 : 0);
+                if (diff > available + dbl) return `${trailer?.name} trails by ${diff}  -  only ${available} points left (out of reach)`;
+                return `${trailer?.name} trails by ${diff} (needs ${diff} to tie)  -  ${available} points still available`;
+            })();
+
             // The faint "Version Update" stamp (bottom-right) is for Host / Main screens only - never the Stream
             useEffect(() => {
                 const el = document.getElementById('htl-version');
@@ -3848,6 +3878,41 @@
                     [arr[idx], arr[j]] = [arr[j], arr[idx]];
                     setOrder(bracket, arr);
                 };
+                // ---- drag & drop / swap ----
+                const applyLists = (champ, chump) => {
+                    const next = {};
+                    Object.keys(leagueSeeds).forEach(k => { const b = leagueSeeds[k].bracket; if (b !== 'champ' && b !== 'chump') next[k] = leagueSeeds[k]; });
+                    champ.forEach((t, i) => { next[t.id] = { bracket: 'champ', seed: i + 1 }; });
+                    chump.forEach((t, i) => { next[t.id] = { bracket: 'chump', seed: i + 1 }; });
+                    saveLeagueSeeds(next);
+                };
+                const startDrag = (team, from) => (e) => { window.__htlDrag = { team, from }; try { e.dataTransfer.setData('text/plain', team.name); e.dataTransfer.effectAllowed = 'move'; } catch (err) {} };
+                const allowDrop = (e) => { e.preventDefault(); };
+                const dropOn = (bracket, idx) => (e) => {
+                    e.preventDefault();
+                    const d = window.__htlDrag; window.__htlDrag = null;
+                    if (!d) return;
+                    const L = { champ: [...lists.champ], chump: [...lists.chump] };
+                    const occupant = lists[bracket][idx] || null;
+                    if (occupant && occupant.id === d.team.id) return;
+                    if (d.from) {
+                        const A = d.from.bracket, a = d.from.idx;
+                        if (occupant) { L[A][a] = occupant; L[bracket][idx] = d.team; }          // swap two teams
+                        else { L[A].splice(a, 1); if (L[bracket].length >= 8) return; L[bracket].push(d.team); }   // move to an open seed
+                    } else {
+                        if (occupant) L[bracket][idx] = d.team;                                   // replaces; the old team goes back to "not placed"
+                        else { if (L[bracket].length >= 8) return; L[bracket].push(d.team); }
+                    }
+                    applyLists(L.champ, L.chump);
+                };
+                const dropOnPool = (e) => {
+                    e.preventDefault();
+                    const d = window.__htlDrag; window.__htlDrag = null;
+                    if (!d || !d.from) return;
+                    const L = { champ: [...lists.champ], chump: [...lists.chump] };
+                    L[d.from.bracket].splice(d.from.idx, 1);
+                    applyLists(L.champ, L.chump);
+                };
                 const btn = { fontSize: '18px', padding: '2px 10px' };
                 const column = (bracket, title, accent) => (
                     <div className="flex-1 rounded-xl p-3" style={{border: '3px solid ' + accent, backgroundColor: 'rgba(255,255,255,0.03)'}}>
@@ -3855,7 +3920,10 @@
                         {Array.from({ length: 8 }).map((_, i) => {
                             const t = lists[bracket][i];
                             return (
-                                <div key={i} className="flex items-center gap-3 rounded-lg px-2 mt-2" style={{height: '60px', backgroundColor: t ? `${t.color}77` : 'rgba(255,255,255,0.05)'}}>
+                                <div key={i} className="flex items-center gap-3 rounded-lg px-2 mt-2"
+                                    draggable={!!t} onDragStart={t ? startDrag(t, { bracket, idx: i }) : undefined}
+                                    onDragOver={allowDrop} onDrop={dropOn(bracket, i)}
+                                    style={{height: '60px', cursor: t ? 'grab' : 'default', backgroundColor: t ? `${t.color}77` : 'rgba(255,255,255,0.05)'}}>
                                     <div className="text-white font-black text-center" style={{fontSize: '28px', width: '40px'}}>{i + 1}</div>
                                     {t ? (
                                         <>
@@ -3876,16 +3944,16 @@
                     <div className="bg-gray-900 rounded-2xl border-4 flex flex-col" style={{borderColor: '#f59e0b', padding: '24px', width: '1700px'}}>
                         <h2 className="text-white font-bold text-center" style={{fontSize: '40px'}}>Seeds &amp; Brackets</h2>
                         <p className="text-gray-400 text-center mb-3" style={{fontSize: '18px'}}>
-                            Tap CHAMP or CHUMP under a team to place it in the next open seed. Use ▲ ▼ to reorder, ✕ to take a team out. Saved automatically.
+                            Drag a team onto a seed (drop on another team to swap), or tap CHAMP / CHUMP to place it in the next open seed. ▲ ▼ reorder, ✕ takes a team out. Saved automatically.
                         </p>
                         <div className="flex gap-4 mb-3">
                             {column('champ', 'CHAMPIONSHIP', '#facc15')}
                             {column('chump', 'CHUMP', '#fb923c')}
                         </div>
                         <div className="text-gray-300 font-bold" style={{fontSize: '20px'}}>Not placed yet ({pool.length})</div>
-                        <div className="flex flex-wrap gap-2 mt-1" style={{minHeight: '40px'}}>
+                        <div className="flex flex-wrap gap-2 mt-1" style={{minHeight: '40px'}} onDragOver={allowDrop} onDrop={dropOnPool}>
                             {pool.map(t => (
-                                <div key={t.id} className="flex items-center gap-2 rounded-lg px-2" style={{backgroundColor: `${t.color}77`, height: '48px'}}>
+                                <div key={t.id} className="flex items-center gap-2 rounded-lg px-2" draggable onDragStart={startDrag(t, null)} style={{backgroundColor: `${t.color}77`, height: '48px', cursor: 'grab'}}>
                                     <img src={`${imagePath}${t.logo}`} alt="" style={{width: '34px', height: '34px', objectFit: 'contain'}} />
                                     <span className="text-white font-bold" style={{fontSize: '18px'}}>{t.name}</span>
                                     <button onClick={() => place(t, 'champ')} disabled={lists.champ.length >= 8} className="rounded font-bold disabled:opacity-30" style={{...btn, backgroundColor: '#facc15', color: '#000'}}>CHAMP</button>
@@ -4526,6 +4594,11 @@
                                                     <img src={`${imagePath}${team.logo}`} alt={team.name}
                                                         className="w-full h-20 object-contain mb-2" />
                                                     <p className="text-white text-center text-xs font-bold">{team.name}</p>
+                                                    {leagueSeeds[team.id] && leagueSeeds[team.id].bracket && (
+                                                        <p className="text-center text-xs font-bold" style={{color: leagueSeeds[team.id].bracket === 'champ' ? '#facc15' : '#fb923c'}}>
+                                                            {leagueSeeds[team.id].bracket === 'champ' ? 'Championship' : 'Chump'}{leagueSeeds[team.id].seed ? ` #${leagueSeeds[team.id].seed}` : ''}
+                                                        </p>
+                                                    )}
                                                 </div>
                                             );
                                         })}
@@ -4834,7 +4907,7 @@
                                                     tieBreakerBottomsUpQuestion: tbBottoms || null,
                                                     selectedShootoutQuestion: selectedShootoutQuestion || null,
                                                     selectedTieBreakerShootoutQuestion: tbShootout || null,
-                                                    closestToQuestions: rotateList(closestToQuestions, 5 * wizardMatchIdx)
+                                                    closestToQuestions: rotateList(closestToQuestions, 10 * wizardMatchIdx)
                                                 };
                                                 setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
                                                 if (wizardMatchIdx < totalMatches - 1) {
@@ -5045,7 +5118,7 @@
                                             Tiebreaker: {cfg.tiebreakerType === 'closestTo' ? 'Closest To' : cfg.tiebreakerType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
                                         </h2>
                                         {cfg.tiebreakerType === 'closestTo' ? (
-                                            (cfg.closestToQuestions || []).slice(0, 5).map((q, i) => (
+                                            (cfg.closestToQuestions || []).slice(...((cfg.closestToQuestions || []).length >= 10 ? [5, 10] : [0, 5])).map((q, i) => (
                                                 <div key={i} className="mb-3 pb-3 border-b border-gray-700">
                                                     <p className="text-white text-sm">Q{i + 1}: {renderQuestionText(q.question, true)}</p>
                                                     <p className="text-yellow-400 text-sm">A: {q.answer}</p>
@@ -5327,6 +5400,11 @@
                                         <img src={`${imagePath}${team.logo}`} alt={team.name} 
                                             className="w-full h-32 object-contain mb-2" />
                                         <p className="text-white text-center text-sm font-bold">{team.name}</p>
+                                        {leagueSeeds[team.id] && leagueSeeds[team.id].bracket && (
+                                            <p className="text-center text-sm font-bold" style={{color: leagueSeeds[team.id].bracket === 'champ' ? '#facc15' : '#fb923c'}}>
+                                                {leagueSeeds[team.id].bracket === 'champ' ? 'Championship' : 'Chump'}{leagueSeeds[team.id].seed ? ` #${leagueSeeds[team.id].seed}` : ''}
+                                            </p>
+                                        )}
                                     </div>
                                 );
                             })}
@@ -5517,7 +5595,7 @@
                                     <div className="flex items-center justify-center mb-8 gap-4">
                                         <div className={`rounded-2xl border-8 flex items-center justify-center ${isResuming ? '' : 'team-logo-transition'}`} style={{
                                             borderColor: '#7d3ad4',
-                                            backgroundColor: `${selectedTeam1.color}`,
+                                            backgroundColor: 'rgba(0,0,0,0.8)',
                                             width: '200px',
                                             height: '200px',
                                             opacity: 1,
@@ -5555,7 +5633,7 @@
                                     
                                         <div className={`rounded-2xl border-8 flex items-center justify-center ${isResuming ? '' : 'team-logo-transition'}`} style={{
                                             borderColor: '#7d3ad4',
-                                            backgroundColor: `${selectedTeam2.color}`,
+                                            backgroundColor: 'rgba(0,0,0,0.8)',
                                             width: '200px',
                                             height: '200px',
                                             opacity: 1,
@@ -5980,7 +6058,7 @@
                             padding: '24px 48px', fontSize: '48px', width: '1300px', lineHeight: 1.2
                         }}>
                             <div style={{color: '#f87171'}}>
-                                {(bottomsUpClinchWinnerNow === 1 ? selectedTeam2?.name : selectedTeam1?.name) || 'This team'} CAN'T CATCH UP - OUT OF REACH
+                                {(bottomsUpClinchWinnerNow === 1 ? selectedTeam2?.name : selectedTeam1?.name) || 'This team'} CAN'T CATCH UP
                             </div>
                             <div style={{fontSize: '38px', color: '#fde047', marginTop: '10px'}}>
                                 {(bottomsUpClinchWinnerNow === 1 ? selectedTeam1?.name : selectedTeam2?.name) || 'The leader'} wins Bottoms Up with the higher score
@@ -6228,6 +6306,46 @@
 
                     {positionModalJSX}
 
+                    {/* HTL-styled score editor (replaces the browser pop-up) */}
+                    {userMode === 'host' && scoreEdit && (
+                        <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 200}}>
+                            <div className="bg-gray-900 rounded-3xl border-8 text-center" style={{borderColor: '#7d3ad4', padding: '48px 64px', width: '1100px'}}>
+                                <div className="text-white font-black" style={{fontSize: '56px'}}>Edit Score</div>
+                                <div className="font-bold" style={{fontSize: '40px', color: '#fb923c', marginTop: '8px'}}>
+                                    {(scoreEdit.team === 1 ? selectedTeam1 : selectedTeam2)?.name}
+                                </div>
+                                <input autoFocus type="number" value={scoreEdit.value}
+                                    onChange={(e) => setScoreEdit({ ...scoreEdit, value: e.target.value })}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') document.getElementById('htl-score-save')?.click();
+                                        if (e.key === 'Escape') setScoreEdit(null);
+                                    }}
+                                    className="bg-gray-800 text-white text-center font-black rounded-xl border-4 border-gray-600"
+                                    style={{fontSize: '110px', width: '420px', marginTop: '28px', padding: '8px'}} />
+                                <div className="flex justify-center gap-10" style={{marginTop: '36px'}}>
+                                    <button onClick={() => setScoreEdit(null)}
+                                        className="bg-gray-600 hover:bg-gray-500 text-white font-bold rounded-lg border-4 border-black"
+                                        style={{fontSize: '40px', padding: '14px 56px'}}>CANCEL</button>
+                                    <button id="htl-score-save" onClick={() => {
+                                            const n = parseInt(scoreEdit.value, 10);
+                                            if (Number.isFinite(n)) { if (scoreEdit.team === 1) setTeam1Score(n); else setTeam2Score(n); }
+                                            setScoreEdit(null);
+                                        }}
+                                        className="bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg border-4 border-black"
+                                        style={{fontSize: '40px', padding: '14px 56px'}}>SAVE</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* HOST ONLY: what the trailing team needs, and how many points are still up for grabs */}
+                    {userMode === 'host' && gameStarted && !showWinnerScreen && catchUpInfo && (
+                        <div className="absolute text-white font-bold text-center" style={{
+                            bottom: '8px', left: '50%', transform: 'translateX(-50%)', zIndex: 40, whiteSpace: 'nowrap',
+                            backgroundColor: 'rgba(0,0,0,0.65)', border: '3px solid #7d3ad4', borderRadius: '14px', padding: '8px 28px', fontSize: '30px'
+                        }}>{catchUpInfo}</div>
+                    )}
+
                     {/* PLAYOFFS: "out of reach" notice - shown on Host AND Stream; the host decides with a button. */}
                     {gameStarted && playoffClinchWinner && !playoffNoticeDismissed && !showWinnerScreen && (
                         <div className="absolute font-bold text-white text-center" style={{
@@ -6236,7 +6354,7 @@
                             padding: '24px 48px', fontSize: '48px', width: '1500px', lineHeight: 1.2
                         }}>
                             <div style={{color: '#f87171'}}>
-                                {(playoffClinchWinner === 1 ? selectedTeam2?.name : selectedTeam1?.name) || 'This team'} CAN'T CATCH UP - OUT OF REACH
+                                {(playoffClinchWinner === 1 ? selectedTeam2?.name : selectedTeam1?.name) || 'This team'} CAN'T CATCH UP
                             </div>
                             <div style={{fontSize: '38px', color: '#fde047', marginTop: '10px'}}>
                                 {(playoffClinchWinner === 1 ? selectedTeam1?.name : selectedTeam2?.name) || 'The leader'} wins the match
@@ -6465,12 +6583,7 @@
                                 </div>
                                 {userMode === 'host' && (
                                     <button
-                                        onClick={() => {
-                                            const newScore = prompt(`Edit Team 1 Score (${selectedTeam1.name}):`, team1Score);
-                                            if (newScore !== null && !isNaN(newScore)) {
-                                                setTeam1Score(parseInt(newScore));
-                                            }
-                                        }}
+                                        onClick={() => setScoreEdit({ team: 1, value: String(team1Score) })}
                                         className={`absolute bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-full border-2 border-white ${showWinnerScreen ? 'hide-on-winner' : ''}`}
                                         style={{
                                             width: '60px',
@@ -6505,12 +6618,7 @@
                                 </div>
                                 {userMode === 'host' && (
                                     <button
-                                        onClick={() => {
-                                            const newScore = prompt(`Edit Team 2 Score (${selectedTeam2.name}):`, team2Score);
-                                            if (newScore !== null && !isNaN(newScore)) {
-                                                setTeam2Score(parseInt(newScore));
-                                            }
-                                        }}
+                                        onClick={() => setScoreEdit({ team: 2, value: String(team2Score) })}
                                         className={`absolute bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-full border-2 border-white ${showWinnerScreen ? 'hide-on-winner' : ''}`}
                                         style={{
                                             width: '60px',
@@ -6590,7 +6698,7 @@
                         <div className={`flex items-center justify-center mb-8 gap-4 ${showWinnerScreen ? 'hide-on-winner' : ''}`} style={{position: 'relative', zIndex: (timersExpanded && !showImageOverlay) ? 60 : 'auto'}}>
                             <div className={`rounded-2xl border-8 flex items-center justify-center team-logo-transition ${doubleDipSecondGuess && doubleDipTeam === 1 ? 'timer-flash' : ''}`} style={{
                                 borderColor: '#7d3ad4',
-                                backgroundColor: `${selectedTeam1.color}`,
+                                backgroundColor: 'rgba(0,0,0,0.8)',
                                 width: '200px',
                                 height: '200px',
                                 transform: timersExpanded ? 'translateX(-450px)' : 'translateX(0)',
@@ -6635,7 +6743,7 @@
                         
                             <div className={`rounded-2xl border-8 flex items-center justify-center team-logo-transition ${doubleDipSecondGuess && doubleDipTeam === 2 ? 'timer-flash' : ''}`} style={{
                                 borderColor: '#7d3ad4',
-                                backgroundColor: `${selectedTeam2.color}`,
+                                backgroundColor: 'rgba(0,0,0,0.8)',
                                 width: '200px',
                                 height: '200px',
                                 transform: timersExpanded ? 'translateX(450px)' : 'translateX(0)',
