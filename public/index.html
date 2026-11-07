@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 5:59 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 6:46 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -678,8 +678,8 @@
                 ctx.strokeStyle = 'black'; ctx.strokeText(text, cx, cy);
                 ctx.fillStyle = 'white'; ctx.fillText(text, cx, cy);
             };
-            if (rec1) stroked(rec1, 280, 640, 130, 480);
-            if (rec2) stroked(rec2, W - 280, 640, 130, 480);
+            if (rec1) stroked(rec1, 280, 598, 108, 440);
+            if (rec2) stroked(rec2, W - 280, 598, 108, 440);
             const wk = String(week || '').trim();
             if (wk) {
                 stroked('WEEK', W / 2, 150, 54, 200);
@@ -888,7 +888,10 @@
             const skipIntroRef = React.useRef(false);
             const streamIntroStartedRef = React.useRef(false);
             const streamSkipRef = React.useRef(false);
-            const streamSeriesIntroRef = React.useRef(false);   // true while the Stream plays the between-match intro
+            const streamSeriesIntroRef = React.useRef(false);
+            const broadcastImplRef = React.useRef(null);   // always points at the newest broadcast function (delayed calls must not send old data)
+            const streamSeqEndAtRef = React.useRef(0);      // when the Stream's own intro sequence is due to finish
+            const winnerAudioRef = React.useRef(null);   // true while the Stream plays the between-match intro
             const streamAudioRef = React.useRef(null);
             const teamAnnounceAudioRef = React.useRef(null);
             const [adminStep, setAdminStep] = useState(1);
@@ -1293,7 +1296,8 @@
                                 }
                                 if (gameState.gameStarted) {
                                     // If gameStarted before our local sequence finishes, host clicked Skip
-                                    if (streamIntroStartedRef.current && !streamSeriesIntroRef.current) {
+                                    const stillEarly = Date.now() < streamSeqEndAtRef.current - 2500;   // arrived well before our intro finished = real Skip
+                                    if (streamIntroStartedRef.current && !streamSeriesIntroRef.current && stillEarly) {
                                         streamSkipRef.current = true;
                                         // Stop audio
                                         if (streamAudioRef.current) {
@@ -1341,6 +1345,7 @@
                             if (!ts || streamIntroStartedRef.current) return;
                             console.log('🚀 Stream received matchStartTimestamp, starting local sequence');
                             streamIntroStartedRef.current = true;
+                            streamSeqEndAtRef.current = Date.now() + 60000;   // refined once the intro itself starts
                             
                             if (!streamAudioRef.current) {
                                 streamAudioRef.current = new Audio(`${audioPath}countdown.mp3`);
@@ -1381,6 +1386,7 @@
                                     setWhiteFading(true);
                                     setBackgroundFading(true);
                                     setShowIntro(true);
+                                    streamSeqEndAtRef.current = Date.now() + 12000;
                                     // Play Team Announcement audio at white flash peak
                                     if (shouldPlayOnce('announce', 25000)) {
                                         const announceAudio = new Audio(`${audioPath}Team Announcement.mp3`);
@@ -1413,6 +1419,7 @@
                             lastIntroN = v.n;
                             streamSeriesIntroRef.current = true;
                             streamSkipRef.current = false;
+                            streamSeqEndAtRef.current = Date.now() + 12000;
                             setShowCountdown(false);
                             setIntroStep(0);
                             setWhiteFading(true);
@@ -1497,10 +1504,18 @@
 
             // Stream plays Winner.mp3 when winner screen appears
             useEffect(() => {
-                if (userMode === 'stream' && showWinnerScreen && shouldPlayOnce('winner', 20000)) {
-                    const winnerAudio = new Audio(`${audioPath}Winner.mp3`);
-                    winnerAudio.volume = 1.0;
-                    winnerAudio.play().catch(() => {});
+                if (userMode !== 'stream') return;
+                if (showWinnerScreen) {
+                    if (!winnerAudioRef.current && shouldPlayOnce('winner', 3000)) {
+                        const winnerAudio = new Audio(`${audioPath}Winner.mp3`);
+                        winnerAudio.volume = 1.0;
+                        winnerAudioRef.current = winnerAudio;
+                        winnerAudio.play().catch(() => {});
+                    }
+                } else if (winnerAudioRef.current) {
+                    // next match is starting: the end-of-match sound must not play over the intro
+                    try { winnerAudioRef.current.pause(); } catch (e) {}
+                    winnerAudioRef.current = null;
                 }
             }, [userMode, showWinnerScreen]);
 
@@ -2288,7 +2303,6 @@
                 if (selectedTeam1 && selectedTeam2) {
                     if (seasonType === 'playoff' && !getSeedPair(selectedTeam1, selectedTeam2)) return;
                     setWizardMatchIdx(0);
-                    if (seasonType === 'regular') loadRecordsFor([selectedTeam1, selectedTeam2]);
                     setAdminStep(2);
                 }
             };
@@ -2339,18 +2353,22 @@
                     : { higher: teamB, lower: teamA, higherSeed: b, lowerSeed: a };
             };
 
+            const SEEDS_FALLBACK_PATH = 'rooms/_leagueSeeds/seeds';
             const saveLeagueSeeds = (next) => {
                 setLeagueSeeds(next);
                 try { localStorage.setItem('htlLeagueSeeds', JSON.stringify(next)); } catch (e) {}
-                try {
-                    database.ref('leagueSeeds').set(JSON.parse(JSON.stringify(next)), (err) => {
-                        setSeedsStatus(err
-                            ? 'Saved on this computer only - could not save to the shared database (' + (err.code || err.message) + ').'
-                            : 'Saved.');
-                    });
-                } catch (e) {
-                    setSeedsStatus('Saved on this computer only.');
-                }
+                // Some database setups only allow writing inside "rooms", so we also keep a copy there.
+                const clean = JSON.parse(JSON.stringify(next));
+                let okCount = 0, failCount = 0, lastErr = '';
+                const done = (err) => {
+                    if (err) { failCount++; lastErr = err.code || err.message || 'error'; } else okCount++;
+                    if (okCount + failCount < 2) return;
+                    setSeedsStatus(okCount > 0
+                        ? 'Saved to the shared database.'
+                        : 'Saved on this computer only - the database refused the write (' + lastErr + ').');
+                };
+                try { database.ref('leagueSeeds').set(clean, done); } catch (e) { done(e); }
+                try { database.ref(SEEDS_FALLBACK_PATH).set(clean, done); } catch (e) { done(e); }
             };
 
             // Who decides First/Second for a given match number (0-based): matches 1 and 3 -> higher seed,
@@ -2572,7 +2590,8 @@
 
             // Broadcast game state to all streams
             const lastBroadcastRef = React.useRef(null);
-            const broadcastGameState = () => {
+            const broadcastGameState = () => { if (broadcastImplRef.current) broadcastImplRef.current(); };
+            const broadcastGameStateImpl = () => {
                 if (userMode === 'host' && roomCode) {
                     const gameState = {
                         selectedTeam1: selectedTeam1 ?? null,
@@ -2676,6 +2695,7 @@
                     }
                 }
             };
+            broadcastImplRef.current = broadcastGameStateImpl;
             
             const handleAdminLogin = () => {
                 if (adminPassword === 'HaychTL3') {
@@ -3668,13 +3688,20 @@
                     if (local && typeof local === 'object') setLeagueSeeds(local);
                 } catch (e) {}
                 try {
-                    database.ref('leagueSeeds').once('value').then((snap) => {
-                        const v = snap.val();
+                    const apply = (v) => {
                         if (!cancelled && v && typeof v === 'object') {
                             setLeagueSeeds(v);
                             try { localStorage.setItem('htlLeagueSeeds', JSON.stringify(v)); } catch (e) {}
+                            return true;
                         }
-                    }).catch(() => {});
+                        return false;
+                    };
+                    database.ref('leagueSeeds').once('value').then((snap) => {
+                        if (apply(snap.val())) return;
+                        return database.ref('rooms/_leagueSeeds/seeds').once('value').then((s2) => { apply(s2.val()); });
+                    }).catch(() => {
+                        database.ref('rooms/_leagueSeeds/seeds').once('value').then((s2) => { apply(s2.val()); }).catch(() => {});
+                    });
                 } catch (e) {}
                 return () => { cancelled = true; };
             }, [userMode]);
@@ -3827,24 +3854,22 @@
                     }}>
                         <div className="bg-gray-900 rounded-lg p-8 border-4" style={{borderColor: '#7d3ad4'}}>
                             <h2 className="text-4xl font-bold text-white mb-6 text-center">ADMIN LOGIN</h2>
-                            <input
-                                type="text"
-                                name="htl-access-code"
-                                autoComplete="off"
-                                autoCorrect="off"
-                                autoCapitalize="off"
-                                spellCheck={false}
-                                data-lpignore="true"
-                                data-1p-ignore="true"
-                                data-form-type="other"
-                                value={adminPassword}
-                                onChange={(e) => setAdminPassword(e.target.value)}
-                                onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                            {/* Not a real <input>, so no password manager (Chrome, iCloud, 1Password...) has a field to offer saving. */}
+                            <div
+                                id="htl-code-box"
+                                tabIndex={0}
+                                ref={(el) => { if (el && !el._focusedOnce) { el._focusedOnce = true; el.focus(); } }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') { e.preventDefault(); handleAdminLogin(); return; }
+                                    if (e.key === 'Backspace') { e.preventDefault(); setAdminPassword(p => p.slice(0, -1)); return; }
+                                    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); setAdminPassword(p => p + e.key); }
+                                }}
+                                onPaste={(e) => { e.preventDefault(); const t = (e.clipboardData.getData('text') || '').trim(); setAdminPassword(p => p + t); }}
                                 className="w-full text-center text-3xl font-bold bg-gray-800 text-white rounded p-4 mb-4"
-                                style={{WebkitTextSecurity: 'disc', textSecurity: 'disc'}}
-                                placeholder="Enter Password"
-                                autoFocus
-                            />
+                                style={{outline: 'none', border: '2px solid #7d3ad4', minHeight: '72px', userSelect: 'none', cursor: 'text'}}
+                            >
+                                {adminPassword ? '\u2022'.repeat(adminPassword.length) : <span style={{color: '#6b7280', fontWeight: 400}}>Enter Password</span>}
+                            </div>
                             <button
                                 onClick={handleAdminLogin}
                                 className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-2xl"
@@ -4453,6 +4478,21 @@
                                         })}
                                     </div>
 
+                                    {/* Team records typed in by the host (shown under the logos during the pre-match intro) */}
+                                    {seasonType === 'regular' && selectedTeam1 && selectedTeam2 && (
+                                        <div className="mt-4 bg-gray-800 rounded-lg p-3 border-4 flex items-center justify-center gap-6 flex-wrap" style={{borderColor: '#7d3ad4'}}>
+                                            <span className="text-purple-400 font-bold text-lg">Team records (optional, shown during the pre-match intro):</span>
+                                            {[selectedTeam1, selectedTeam2].map((t) => (
+                                                <label key={t.id} className="flex items-center gap-2 text-white font-bold">
+                                                    {t.name}
+                                                    <input value={teamRecords[t.id] || ''} placeholder="e.g. 7-4"
+                                                        onChange={(e) => setTeamRecords(prev => ({ ...prev, [t.id]: e.target.value }))}
+                                                        className="bg-gray-900 text-white rounded border-2 border-gray-600 p-1 text-center" style={{width: '90px'}} />
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
+
                                     {/* Confirm Button */}
                                     <div className="mt-auto pt-6 text-center">
                                         <button
@@ -4789,7 +4829,7 @@
                                     {seasonType === 'regular' && (
                                         <div className="bg-gray-800 rounded-lg p-4 border-4 mb-6" style={{borderColor: '#7d3ad4'}}>
                                             <div className="flex items-center gap-4 flex-wrap">
-                                                <span className="text-purple-400 font-bold text-xl">Team records (shown under each logo):</span>
+                                                <span className="text-purple-400 font-bold text-xl">Team records (shown during the pre-match intro):</span>
                                                 {[selectedTeam1, selectedTeam2].map((t, i) => t && (
                                                     <label key={t.id} className="flex items-center gap-2 text-white font-bold">
                                                         {t.name}
@@ -5307,7 +5347,7 @@
                                     transform: 'perspective(1000px) rotateY(15deg)',
                                     fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
                                     WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
-                                    opacity: introStep >= 2 ? 1 : 0, transition: 'opacity 1.2s ease-in'
+                                    opacity: (introStep >= 2 && introStep < 5) ? 1 : 0, transition: 'opacity 1.2s ease-in'
                                 }}>
                                     {teamRecords[selectedTeam1.id]}
                                 </div>
@@ -5341,7 +5381,7 @@
                                     transform: 'perspective(1000px) rotateY(-15deg)',
                                     fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
                                     WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
-                                    opacity: introStep >= 3 ? 1 : 0, transition: 'opacity 1.2s ease-in'
+                                    opacity: (introStep >= 3 && introStep < 5) ? 1 : 0, transition: 'opacity 1.2s ease-in'
                                 }}>
                                     {teamRecords[selectedTeam2.id]}
                                 </div>
@@ -5659,17 +5699,6 @@
                                     opacity: showWinnerScreen ? 0.9 : ((currentRound === 7 || currentRound === 14 || activeTeam === 1) ? 0.9 : 0.1)
                                 }}
                             />
-                            {seasonType === 'regular' && teamRecords[selectedTeam1?.id] && (
-                                <div style={{
-                                    position: 'absolute', left: 0, right: 0, top: 'calc(100% - 30px)', textAlign: 'center',
-                                    transform: 'perspective(1000px) rotateY(15deg)',
-                                    fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
-                                    WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
-                                    opacity: showWinnerScreen ? 0 : 0.95, transition: 'opacity 1.2s ease-in', pointerEvents: 'none'
-                                }}>
-                                    {teamRecords[selectedTeam1.id]}
-                                </div>
-                            )}
                         </div>
                         
                         <div className="absolute" style={{
@@ -5690,17 +5719,6 @@
                                     opacity: showWinnerScreen ? 0.9 : ((currentRound === 7 || currentRound === 14 || activeTeam === 2 || powerupPhase || (currentQuestion === 1 && !showQuestion)) ? 0.9 : 0.1)
                                 }}
                             />
-                            {seasonType === 'regular' && teamRecords[selectedTeam2?.id] && (
-                                <div style={{
-                                    position: 'absolute', left: 0, right: 0, top: 'calc(100% - 30px)', textAlign: 'center',
-                                    transform: 'perspective(1000px) rotateY(-15deg)',
-                                    fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
-                                    WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
-                                    opacity: showWinnerScreen ? 0 : 0.95, transition: 'opacity 1.2s ease-in', pointerEvents: 'none'
-                                }}>
-                                    {teamRecords[selectedTeam2.id]}
-                                </div>
-                            )}
                         </div>
                     </div>
 
