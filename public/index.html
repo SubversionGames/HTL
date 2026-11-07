@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 6:46 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 7:22 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -689,6 +689,36 @@
         };
 
         // Host tool (room-code screen): pick two teams + week, records are looked up automatically, then download the PNG
+        // A compact drop-down that lives inside the page (the browser's own pop-up menu gets blown up by the 3200x1800 canvas scaling).
+        function DropSelect({ value, options, placeholder, onChange, fontSize = 26 }) {
+            const [open, setOpen] = useState(false);
+            const cur = options.find(o => String(o.value) === String(value));
+            return (
+                <div style={{position: 'relative', width: '100%', minWidth: 0}}>
+                    <button type="button" onClick={() => setOpen(o => !o)}
+                        className="bg-gray-800 text-white rounded border-2 border-gray-600 w-full flex items-center justify-between text-left"
+                        style={{fontSize: fontSize + 'px', padding: '10px 14px'}}>
+                        <span style={{color: cur ? 'white' : '#9ca3af'}}>{cur ? cur.label : placeholder}</span>
+                        <span style={{fontSize: (fontSize - 6) + 'px', color: '#9ca3af'}}>{open ? '\u25B2' : '\u25BC'}</span>
+                    </button>
+                    {open && (
+                        <>
+                            <div onClick={() => setOpen(false)} style={{position: 'fixed', inset: 0, zIndex: 10001}} />
+                            <div className="bg-gray-800 border-2 border-gray-500 rounded" style={{position: 'absolute', left: 0, right: 0, top: '100%', marginTop: '4px', zIndex: 10002, maxHeight: '420px', overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.6)'}}>
+                                {options.map(o => (
+                                    <div key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+                                        className="text-white hover:bg-purple-700 cursor-pointer"
+                                        style={{fontSize: (fontSize - 2) + 'px', padding: '8px 14px', backgroundColor: String(o.value) === String(value) ? '#4c1d95' : undefined}}>
+                                        {o.label}
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    )}
+                </div>
+            );
+        }
+
         function ThumbnailMaker({ teamsData, imagePath, onClose }) {
             const [t1, setT1] = useState('');
             const [t2, setT2] = useState('');
@@ -736,7 +766,7 @@
                 }, 'image/png');
             };
 
-            const field = { fontSize: '26px', padding: '10px 14px' };
+            const field = { fontSize: '26px', padding: '10px 14px', width: '100%', minWidth: 0 };
             return (
                 <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 10000}}>
                     <div className="bg-gray-900 rounded-3xl border-8 flex gap-8" style={{borderColor: '#7d3ad4', padding: '36px', width: '2500px'}}>
@@ -744,15 +774,13 @@
                             <canvas ref={canvasRef} style={{width: '1280px', height: '720px', borderRadius: '12px', border: '3px solid #374151'}} />
                             <div className="text-gray-400" style={{fontSize: '22px', marginTop: '10px'}}>1280 x 720 PNG - ready for YouTube</div>
                         </div>
-                        <div className="flex flex-col gap-4 flex-1 text-white">
+                        <div className="flex flex-col gap-4 flex-1 text-white" style={{minWidth: 0}}>
                             <h2 className="font-bold" style={{fontSize: '48px'}}>Thumbnail Maker</h2>
                             {[['Team 1', t1, setT1, (v) => lookup(v, t2)], ['Team 2', t2, setT2, (v) => lookup(t1, v)]].map(([label, val, set, after]) => (
                                 <label key={label} className="flex flex-col" style={{fontSize: '24px'}}>
                                     {label}
-                                    <select value={val} onChange={(e) => { set(e.target.value); after(e.target.value); }} className="bg-gray-800 rounded border-2 border-gray-600" style={field}>
-                                        <option value="">Choose a team...</option>
-                                        {teamsData.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                    </select>
+                                    <DropSelect value={val} placeholder="Choose a team..." onChange={(v) => { set(v); after(v); }}
+                                        options={teamsData.map(t => ({ value: t.id, label: t.name }))} />
                                 </label>
                             ))}
                             <div className="flex gap-4">
@@ -3799,49 +3827,81 @@
             ) : null;
 
             // Seeding screen: mark each team Championship / Chump and give it a seed number
-            const seedEditorJSX = showSeedEditor ? (
+            const seedEditorJSX = showSeedEditor ? (() => {
+                const listFor = (b) => teamsData
+                    .filter(t => leagueSeeds[t.id] && leagueSeeds[t.id].bracket === b)
+                    .sort((x, y) => ((leagueSeeds[x.id].seed || 99) - (leagueSeeds[y.id].seed || 99)) || x.name.localeCompare(y.name));
+                const lists = { champ: listFor('champ'), chump: listFor('chump') };
+                const pool = teamsData.filter(t => !(leagueSeeds[t.id] && leagueSeeds[t.id].bracket));
+                // Rewrites one bracket from an ordered list so seeds are always 1, 2, 3... with no gaps
+                const setOrder = (bracket, list) => {
+                    const next = {};
+                    Object.keys(leagueSeeds).forEach(k => { if (leagueSeeds[k].bracket !== bracket) next[k] = leagueSeeds[k]; });
+                    list.forEach((t, i) => { next[t.id] = { bracket, seed: i + 1 }; });
+                    saveLeagueSeeds(next);
+                };
+                const place = (team, bracket) => { if (lists[bracket].length < 8) setOrder(bracket, [...lists[bracket], team]); };
+                const removeFrom = (bracket, idx) => setOrder(bracket, lists[bracket].filter((_, i) => i !== idx));
+                const move = (bracket, idx, d) => {
+                    const arr = [...lists[bracket]]; const j = idx + d;
+                    if (j < 0 || j >= arr.length) return;
+                    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+                    setOrder(bracket, arr);
+                };
+                const btn = { fontSize: '18px', padding: '2px 10px' };
+                const column = (bracket, title, accent) => (
+                    <div className="flex-1 rounded-xl p-3" style={{border: '3px solid ' + accent, backgroundColor: 'rgba(255,255,255,0.03)'}}>
+                        <div className="text-center font-black" style={{fontSize: '30px', color: accent}}>{title}</div>
+                        {Array.from({ length: 8 }).map((_, i) => {
+                            const t = lists[bracket][i];
+                            return (
+                                <div key={i} className="flex items-center gap-3 rounded-lg px-2 mt-2" style={{height: '60px', backgroundColor: t ? `${t.color}77` : 'rgba(255,255,255,0.05)'}}>
+                                    <div className="text-white font-black text-center" style={{fontSize: '28px', width: '40px'}}>{i + 1}</div>
+                                    {t ? (
+                                        <>
+                                            <img src={`${imagePath}${t.logo}`} alt="" style={{width: '44px', height: '44px', objectFit: 'contain'}} />
+                                            <div className="text-white font-bold flex-1" style={{fontSize: '22px'}}>{t.name}</div>
+                                            <button onClick={() => move(bracket, i, -1)} disabled={i === 0} className="bg-gray-700 text-white rounded disabled:opacity-30" style={btn}>▲</button>
+                                            <button onClick={() => move(bracket, i, 1)} disabled={i === lists[bracket].length - 1} className="bg-gray-700 text-white rounded disabled:opacity-30" style={btn}>▼</button>
+                                            <button onClick={() => removeFrom(bracket, i)} className="bg-red-700 text-white rounded" style={btn}>✕</button>
+                                        </>
+                                    ) : <div className="text-gray-500 flex-1" style={{fontSize: '20px'}}>open</div>}
+                                </div>
+                            );
+                        })}
+                    </div>
+                );
+                return (
                 <div className="absolute inset-0 z-50 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.92)', borderRadius: '24px'}}>
-                    <div className="bg-gray-900 rounded-2xl border-4 flex flex-col" style={{borderColor: '#f59e0b', padding: '24px', width: '1000px', maxHeight: '1400px'}}>
+                    <div className="bg-gray-900 rounded-2xl border-4 flex flex-col" style={{borderColor: '#f59e0b', padding: '24px', width: '1700px'}}>
                         <h2 className="text-white font-bold text-center" style={{fontSize: '40px'}}>Seeds &amp; Brackets</h2>
-                        <p className="text-gray-400 text-center mb-4" style={{fontSize: '18px'}}>
-                            Pick Championship or Chump for each team and give it a seed number (1 = top seed). Saved automatically.
+                        <p className="text-gray-400 text-center mb-3" style={{fontSize: '18px'}}>
+                            Tap CHAMP or CHUMP under a team to place it in the next open seed. Use ▲ ▼ to reorder, ✕ to take a team out. Saved automatically.
                         </p>
-                        <div className="overflow-y-auto flex-1 pr-2">
-                            {teamsData.map(team => {
-                                const cur = leagueSeeds[team.id] || {};
-                                const dup = cur.bracket && cur.seed && Object.keys(leagueSeeds).some(k => String(k) !== String(team.id)
-                                    && leagueSeeds[k].bracket === cur.bracket && leagueSeeds[k].seed === cur.seed);
-                                const update = (patch) => {
-                                    const merged = { ...cur, ...patch };
-                                    const next = { ...leagueSeeds };
-                                    if (!merged.bracket && !merged.seed) delete next[team.id]; else next[team.id] = merged;
-                                    saveLeagueSeeds(next);
-                                };
-                                return (
-                                    <div key={team.id} className="flex items-center gap-4 mb-2 rounded-lg p-2" style={{backgroundColor: `${team.color}55`, border: dup ? '3px solid #ef4444' : '3px solid transparent'}}>
-                                        <img src={`${imagePath}${team.logo}`} alt="" style={{width: '48px', height: '48px', objectFit: 'contain'}} />
-                                        <div className="text-white font-bold flex-1" style={{fontSize: '22px'}}>{team.name}</div>
-                                        <select value={cur.bracket || ''} onChange={(e) => update({ bracket: e.target.value || undefined })}
-                                            className="bg-gray-800 text-white rounded p-2 border-2 border-gray-600" style={{fontSize: '20px'}}>
-                                            <option value="">Not set</option>
-                                            <option value="champ">Championship</option>
-                                            <option value="chump">Chump</option>
-                                        </select>
-                                        <input type="number" min="1" max="99" value={cur.seed || ''} placeholder="Seed"
-                                            onChange={(e) => { const n = parseInt(e.target.value, 10); update({ seed: Number.isFinite(n) && n > 0 ? n : undefined }); }}
-                                            className="bg-gray-800 text-white rounded p-2 border-2 border-gray-600 text-center" style={{fontSize: '20px', width: '100px'}} />
-                                    </div>
-                                );
-                            })}
+                        <div className="flex gap-4 mb-3">
+                            {column('champ', 'CHAMPIONSHIP', '#facc15')}
+                            {column('chump', 'CHUMP', '#fb923c')}
                         </div>
-                        <div className="flex items-center justify-between mt-4">
+                        <div className="text-gray-300 font-bold" style={{fontSize: '20px'}}>Not placed yet ({pool.length})</div>
+                        <div className="flex flex-wrap gap-2 mt-1" style={{minHeight: '40px'}}>
+                            {pool.map(t => (
+                                <div key={t.id} className="flex items-center gap-2 rounded-lg px-2" style={{backgroundColor: `${t.color}77`, height: '48px'}}>
+                                    <img src={`${imagePath}${t.logo}`} alt="" style={{width: '34px', height: '34px', objectFit: 'contain'}} />
+                                    <span className="text-white font-bold" style={{fontSize: '18px'}}>{t.name}</span>
+                                    <button onClick={() => place(t, 'champ')} disabled={lists.champ.length >= 8} className="rounded font-bold disabled:opacity-30" style={{...btn, backgroundColor: '#facc15', color: '#000'}}>CHAMP</button>
+                                    <button onClick={() => place(t, 'chump')} disabled={lists.chump.length >= 8} className="rounded font-bold disabled:opacity-30" style={{...btn, backgroundColor: '#fb923c', color: '#000'}}>CHUMP</button>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex items-center justify-between mt-3">
                             <span className="text-gray-400" style={{fontSize: '18px'}}>{seedsStatus}</span>
                             <button onClick={() => setShowSeedEditor(false)}
                                 className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-10 rounded-lg border-4 border-black text-xl">DONE</button>
                         </div>
                     </div>
                 </div>
-            ) : null;
+                );
+            })() : null;
 
             // Password Login Screen
             if (!adminAuthenticated) {
@@ -3854,22 +3914,15 @@
                     }}>
                         <div className="bg-gray-900 rounded-lg p-8 border-4" style={{borderColor: '#7d3ad4'}}>
                             <h2 className="text-4xl font-bold text-white mb-6 text-center">ADMIN LOGIN</h2>
-                            {/* Not a real <input>, so no password manager (Chrome, iCloud, 1Password...) has a field to offer saving. */}
-                            <div
-                                id="htl-code-box"
-                                tabIndex={0}
-                                ref={(el) => { if (el && !el._focusedOnce) { el._focusedOnce = true; el.focus(); } }}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') { e.preventDefault(); handleAdminLogin(); return; }
-                                    if (e.key === 'Backspace') { e.preventDefault(); setAdminPassword(p => p.slice(0, -1)); return; }
-                                    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); setAdminPassword(p => p + e.key); }
-                                }}
-                                onPaste={(e) => { e.preventDefault(); const t = (e.clipboardData.getData('text') || '').trim(); setAdminPassword(p => p + t); }}
+                            <input
+                                type="password"
+                                value={adminPassword}
+                                onChange={(e) => setAdminPassword(e.target.value)}
+                                onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
                                 className="w-full text-center text-3xl font-bold bg-gray-800 text-white rounded p-4 mb-4"
-                                style={{outline: 'none', border: '2px solid #7d3ad4', minHeight: '72px', userSelect: 'none', cursor: 'text'}}
-                            >
-                                {adminPassword ? '\u2022'.repeat(adminPassword.length) : <span style={{color: '#6b7280', fontWeight: 400}}>Enter Password</span>}
-                            </div>
+                                placeholder="Enter Password"
+                                autoFocus
+                            />
                             <button
                                 onClick={handleAdminLogin}
                                 className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-2xl"
@@ -4480,16 +4533,18 @@
 
                                     {/* Team records typed in by the host (shown under the logos during the pre-match intro) */}
                                     {seasonType === 'regular' && selectedTeam1 && selectedTeam2 && (
-                                        <div className="mt-4 bg-gray-800 rounded-lg p-3 border-4 flex items-center justify-center gap-6 flex-wrap" style={{borderColor: '#7d3ad4'}}>
-                                            <span className="text-purple-400 font-bold text-lg">Team records (optional, shown during the pre-match intro):</span>
-                                            {[selectedTeam1, selectedTeam2].map((t) => (
-                                                <label key={t.id} className="flex items-center gap-2 text-white font-bold">
-                                                    {t.name}
-                                                    <input value={teamRecords[t.id] || ''} placeholder="e.g. 7-4"
-                                                        onChange={(e) => setTeamRecords(prev => ({ ...prev, [t.id]: e.target.value }))}
-                                                        className="bg-gray-900 text-white rounded border-2 border-gray-600 p-1 text-center" style={{width: '90px'}} />
-                                                </label>
-                                            ))}
+                                        <div className="mt-4 bg-gray-800 rounded-lg p-3 border-4 flex flex-col items-center gap-2" style={{borderColor: '#7d3ad4'}}>
+                                            <span className="text-purple-400 font-bold text-lg">Team Records (optional)</span>
+                                            <div className="flex items-center justify-center gap-10">
+                                                {[selectedTeam1, selectedTeam2].map((t) => (
+                                                    <label key={t.id} className="flex items-center gap-2 text-white font-bold">
+                                                        {t.name}
+                                                        <input value={teamRecords[t.id] || ''} placeholder="e.g. 7-4"
+                                                            onChange={(e) => setTeamRecords(prev => ({ ...prev, [t.id]: e.target.value }))}
+                                                            className="bg-gray-900 text-white rounded border-2 border-gray-600 p-1 text-center" style={{width: '90px'}} />
+                                                    </label>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
 
@@ -4827,10 +4882,10 @@
                                     </div>
 
                                     {seasonType === 'regular' && (
-                                        <div className="bg-gray-800 rounded-lg p-4 border-4 mb-6" style={{borderColor: '#7d3ad4'}}>
-                                            <div className="flex items-center gap-4 flex-wrap">
-                                                <span className="text-purple-400 font-bold text-xl">Team records (shown during the pre-match intro):</span>
-                                                {[selectedTeam1, selectedTeam2].map((t, i) => t && (
+                                        <div className="bg-gray-800 rounded-lg p-4 border-4 mb-6 flex flex-col items-center gap-3" style={{borderColor: '#7d3ad4'}}>
+                                            <span className="text-purple-400 font-bold text-xl">Team Records (optional)</span>
+                                            <div className="flex items-center justify-center gap-12">
+                                                {[selectedTeam1, selectedTeam2].map((t) => t && (
                                                     <label key={t.id} className="flex items-center gap-2 text-white font-bold">
                                                         {t.name}
                                                         <input value={teamRecords[t.id] || ''} placeholder="W-L"
@@ -4838,10 +4893,7 @@
                                                             className="bg-gray-900 text-white rounded border-2 border-gray-600 p-1 text-center" style={{width: '90px'}} />
                                                     </label>
                                                 ))}
-                                                <button onClick={() => loadRecordsFor([selectedTeam1, selectedTeam2])}
-                                                    className="bg-gray-700 hover:bg-gray-600 text-white font-bold py-1 px-3 rounded border-2 border-gray-500 text-sm">↻ Look up again</button>
                                             </div>
-                                            {recordsStatus && <p className="text-gray-400 text-sm mt-2">{recordsStatus}</p>}
                                         </div>
                                     )}
                                     <div className="flex gap-6 items-start" style={{overflowX: 'auto'}}>
@@ -5347,7 +5399,7 @@
                                     transform: 'perspective(1000px) rotateY(15deg)',
                                     fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
                                     WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
-                                    opacity: (introStep >= 2 && introStep < 5) ? 1 : 0, transition: 'opacity 1.2s ease-in'
+                                    opacity: (introStep >= 1 && introStep < 5) ? 1 : 0, transition: introStep >= 5 ? 'opacity 1.2s ease-in' : 'opacity 0.5s ease-in 0.8s'
                                 }}>
                                     {teamRecords[selectedTeam1.id]}
                                 </div>
@@ -5381,7 +5433,7 @@
                                     transform: 'perspective(1000px) rotateY(-15deg)',
                                     fontSize: '170px', fontWeight: 900, color: 'white', lineHeight: 1.1,
                                     WebkitTextStroke: '10px black', paintOrder: 'stroke fill',
-                                    opacity: (introStep >= 3 && introStep < 5) ? 1 : 0, transition: 'opacity 1.2s ease-in'
+                                    opacity: (introStep >= 2 && introStep < 5) ? 1 : 0, transition: introStep >= 5 ? 'opacity 1.2s ease-in' : 'opacity 0.5s ease-in 0.8s'
                                 }}>
                                     {teamRecords[selectedTeam2.id]}
                                 </div>
@@ -5465,7 +5517,7 @@
                                     <div className="flex items-center justify-center mb-8 gap-4">
                                         <div className={`rounded-2xl border-8 flex items-center justify-center ${isResuming ? '' : 'team-logo-transition'}`} style={{
                                             borderColor: '#7d3ad4',
-                                            backgroundColor: `${selectedTeam1.color}65`,
+                                            backgroundColor: `${selectedTeam1.color}`,
                                             width: '200px',
                                             height: '200px',
                                             opacity: 1,
@@ -5503,7 +5555,7 @@
                                     
                                         <div className={`rounded-2xl border-8 flex items-center justify-center ${isResuming ? '' : 'team-logo-transition'}`} style={{
                                             borderColor: '#7d3ad4',
-                                            backgroundColor: `${selectedTeam2.color}65`,
+                                            backgroundColor: `${selectedTeam2.color}`,
                                             width: '200px',
                                             height: '200px',
                                             opacity: 1,
@@ -6294,20 +6346,6 @@
                                             ? (seriesOver ? `${winnerTeam?.name} WINS THE SERIES!` : `${winnerTeam?.name} WINS GAME ${seriesMatchIndex + 1}!`)
                                             : `${winnerTeam?.name} WINS!`}
                                     </div>
-                                    {totalMatches > 1 && (
-                                        <div className="font-black text-white" style={{
-                                            WebkitTextStroke: '3px black',
-                                            fontSize: '64px',
-                                            position: 'absolute',
-                                            bottom: '330px',
-                                            left: '50%',
-                                            transform: 'translateX(-50%)',
-                                            whiteSpace: 'nowrap',
-                                            animation: 'fadeIn 1.5s ease-in 1s both'
-                                        }}>
-                                            SERIES: {selectedTeam1?.name} {winsFor(selectedTeam1)} - {winsFor(selectedTeam2)} {selectedTeam2?.name}
-                                        </div>
-                                    )}
                                 </div>
                             </div>
 
@@ -6552,7 +6590,7 @@
                         <div className={`flex items-center justify-center mb-8 gap-4 ${showWinnerScreen ? 'hide-on-winner' : ''}`} style={{position: 'relative', zIndex: (timersExpanded && !showImageOverlay) ? 60 : 'auto'}}>
                             <div className={`rounded-2xl border-8 flex items-center justify-center team-logo-transition ${doubleDipSecondGuess && doubleDipTeam === 1 ? 'timer-flash' : ''}`} style={{
                                 borderColor: '#7d3ad4',
-                                backgroundColor: `${selectedTeam1.color}65`,
+                                backgroundColor: `${selectedTeam1.color}`,
                                 width: '200px',
                                 height: '200px',
                                 transform: timersExpanded ? 'translateX(-450px)' : 'translateX(0)',
@@ -6597,7 +6635,7 @@
                         
                             <div className={`rounded-2xl border-8 flex items-center justify-center team-logo-transition ${doubleDipSecondGuess && doubleDipTeam === 2 ? 'timer-flash' : ''}`} style={{
                                 borderColor: '#7d3ad4',
-                                backgroundColor: `${selectedTeam2.color}65`,
+                                backgroundColor: `${selectedTeam2.color}`,
                                 width: '200px',
                                 height: '200px',
                                 transform: timersExpanded ? 'translateX(450px)' : 'translateX(0)',
