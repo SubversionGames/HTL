@@ -674,6 +674,7 @@
             const skipIntroRef = React.useRef(false);
             const streamIntroStartedRef = React.useRef(false);
             const streamSkipRef = React.useRef(false);
+            const streamSeriesIntroRef = React.useRef(false);   // true while the Stream plays the between-match intro
             const streamAudioRef = React.useRef(null);
             const teamAnnounceAudioRef = React.useRef(null);
             const [adminStep, setAdminStep] = useState(1);
@@ -744,6 +745,21 @@
             const [shootoutSecondBoardPending, setShootoutSecondBoardPending] = useState(false);
             const [sheetsLoading, setSheetsLoading] = useState(true);
             const [sheetsError, setSheetsError] = useState(null);
+
+            // ---- Multi-match sessions + playoffs ----
+            const [seasonType, setSeasonType] = useState('regular');        // 'regular' | 'playoff'
+            const [totalMatches, setTotalMatches] = useState(1);            // how many matches in this session
+            const [seriesMatches, setSeriesMatches] = useState([]);         // one saved setup per match (questions, bonus, tiebreaker)
+            const [wizardMatchIdx, setWizardMatchIdx] = useState(0);        // which match the wizard is currently setting up (0-based)
+            const [seriesMatchIndex, setSeriesMatchIndex] = useState(0);    // which match is being played right now (0-based)
+            const [seriesWins, setSeriesWins] = useState({});               // { teamId: matches won }
+            const [seriesRecorded, setSeriesRecorded] = useState([]);       // match numbers whose winner is already counted
+            const [leagueSeeds, setLeagueSeeds] = useState({});             // { teamId: { bracket: 'champ'|'chump', seed: number } }
+            const [seedsStatus, setSeedsStatus] = useState('');             // note shown in the seeding screen (e.g. save problems)
+            const [showSeedEditor, setShowSeedEditor] = useState(false);
+            const [showPositionModal, setShowPositionModal] = useState(false);
+            const [positionModalFor, setPositionModalFor] = useState(0);    // match number (0-based) the First/Second question is for
+            const [playoffNoticeDismissed, setPlayoffNoticeDismissed] = useState(false);
             
             // All 16 teams data
             const teamsData = [
@@ -1033,6 +1049,13 @@
                                 setIsPlaying(gameState.isPlaying || false);
                                 setTrackPosition(gameState.trackPosition ?? 0);
                                 setSoundbarVolume(gameState.soundbarVolume ?? 1);
+                                if (gameState.seriesInfo) {
+                                    setSeasonType(gameState.seriesInfo.seasonType || 'regular');
+                                    setTotalMatches(gameState.seriesInfo.totalMatches || 1);
+                                    setSeriesMatchIndex(gameState.seriesInfo.matchIndex || 0);
+                                    setSeriesWins(gameState.seriesInfo.wins || {});
+                                    setPlayoffNoticeDismissed(!!gameState.seriesInfo.noticeDismissed);
+                                }
                                 // Countdown and intro states no longer synced via gameState
                                 // Stream runs its own local sequence triggered by matchStartTimestamp
                                 
@@ -1044,7 +1067,7 @@
                                 }
                                 if (gameState.gameStarted) {
                                     // If gameStarted before our local sequence finishes, host clicked Skip
-                                    if (streamIntroStartedRef.current) {
+                                    if (streamIntroStartedRef.current && !streamSeriesIntroRef.current) {
                                         streamSkipRef.current = true;
                                         // Stop audio
                                         if (streamAudioRef.current) {
@@ -1150,9 +1173,43 @@
                         });
                         });
 
+                        // Between matches in a multi-match session the Host writes `nextIntro`; the Stream then
+                        // plays its own copy of the intro (white flash, logos fly in, Round 1) - no countdown.
+                        const introRef = database.ref(`rooms/${roomCode}/nextIntro`);
+                        let lastIntroN = null;
+                        let introReady = false;
+                        introRef.on('value', (snap) => {
+                            const v = snap.val();
+                            if (!introReady) { introReady = true; lastIntroN = v ? v.n : null; return; }   // ignore what was already there when we joined
+                            if (!v || v.n === lastIntroN) return;
+                            lastIntroN = v.n;
+                            streamSeriesIntroRef.current = true;
+                            streamSkipRef.current = false;
+                            setShowCountdown(false);
+                            setIntroStep(0);
+                            setWhiteFading(true);
+                            setBackgroundFading(true);
+                            setShowIntro(true);
+                            try {
+                                const announceAudio = new Audio(`${audioPath}Team Announcement.mp3`);
+                                announceAudio.volume = 1.0;
+                                teamAnnounceAudioRef.current = announceAudio;
+                                announceAudio.play().catch(() => {});
+                            } catch (e) {}
+                            setTimeout(() => { if (!streamSkipRef.current) setWhiteFading(false); }, 1500);
+                            setTimeout(() => { if (!streamSkipRef.current) setBackgroundFading(false); }, 3500);
+                            setTimeout(() => { if (!streamSkipRef.current) setIntroStep(1); }, 6000);
+                            setTimeout(() => { if (!streamSkipRef.current) setIntroStep(2); }, 7500);
+                            setTimeout(() => { if (!streamSkipRef.current) setIntroStep(3); }, 9000);
+                            setTimeout(() => { if (!streamSkipRef.current) setIntroStep(4); }, 10000);
+                            setTimeout(() => { if (!streamSkipRef.current) setIntroStep(5); }, 11000);
+                            setTimeout(() => { if (!streamSkipRef.current) setShowIntro(false); streamSeriesIntroRef.current = false; }, 12000);
+                        });
+
                         return () => {
                             gameStateRef.off();
                             tsRef.off();
+                            introRef.off();
                         };
                     }
                 }
@@ -1182,7 +1239,9 @@
                 bottomsUpConfirmedAnswer, bottomsUpActiveTeam, bottomsUpUsedAnswers, bottomsUpTurnNumber,
                 // Questions themselves: so a live edit pulled in from Google Sheets reaches the Stream right away
                 closestToQuestions, bottomsUpQuestion, tieBreakerBottomsUpQuestion,
-                selectedShootoutQuestion, selectedTieBreakerShootoutQuestion
+                selectedShootoutQuestion, selectedTieBreakerShootoutQuestion,
+                // Multi-match sessions / playoffs
+                seasonType, totalMatches, seriesMatchIndex, seriesWins, seriesRecorded, playoffNoticeDismissed
             ]);
             
             // Intro animation sequence
@@ -1477,6 +1536,15 @@
                 setBottomsUpShowModal(false);
                 setBottomsUpHostInput('');
 
+                if (gameState.seriesInfo) {
+                    setSeasonType(gameState.seriesInfo.seasonType || 'regular');
+                    setTotalMatches(gameState.seriesInfo.totalMatches || 1);
+                    setSeriesMatchIndex(gameState.seriesInfo.matchIndex || 0);
+                    setSeriesWins(gameState.seriesInfo.wins || {});
+                    setSeriesRecorded(gameState.seriesInfo.recorded || []);
+                    setPlayoffNoticeDismissed(!!gameState.seriesInfo.noticeDismissed);
+                }
+
                 setTeamsConfirmed(true);
                 setShowIntro(false);
                 setIntroStep(5);
@@ -1594,6 +1662,7 @@
                     
                     setRoomCheckData({
                         gameState,
+                        series: roomData.series || null,
                         isActive,
                         minutesSinceActive: Math.round(minutesSinceActive)
                     });
@@ -1990,6 +2059,8 @@
             
             const handleConfirmTeams = () => {
                 if (selectedTeam1 && selectedTeam2) {
+                    if (seasonType === 'playoff' && !getSeedPair(selectedTeam1, selectedTeam2)) return;
+                    setWizardMatchIdx(0);
                     setAdminStep(2);
                 }
             };
@@ -1999,6 +2070,186 @@
                 setTieBreakerType(selectedTiebreakerType);
                 setTeamsConfirmed(true);
                 setTimeout(() => broadcastGameState(), 100);
+            };
+
+            // ================== MULTI-MATCH SESSIONS + PLAYOFFS ==================
+
+            // Move the first n items of a list to the end (used so each match in a session gets a
+            // different block of 5 Closest To questions).
+            const rotateList = (arr, n) => {
+                if (!arr || arr.length === 0) return arr || [];
+                const k = n % arr.length;
+                return arr.slice(k).concat(arr.slice(0, k));
+            };
+
+            // Seeds: who is the higher seed (smaller number = higher) between two teams.
+            // Returns null if either team has no seed yet or both have the same seed number.
+            const getSeedPair = (teamA, teamB) => {
+                if (!teamA || !teamB) return null;
+                const a = leagueSeeds[teamA.id], b = leagueSeeds[teamB.id];
+                if (!a || !b || !Number.isFinite(a.seed) || !Number.isFinite(b.seed) || a.seed === b.seed) return null;
+                return a.seed < b.seed
+                    ? { higher: teamA, lower: teamB, higherSeed: a, lowerSeed: b }
+                    : { higher: teamB, lower: teamA, higherSeed: b, lowerSeed: a };
+            };
+
+            const saveLeagueSeeds = (next) => {
+                setLeagueSeeds(next);
+                try { localStorage.setItem('htlLeagueSeeds', JSON.stringify(next)); } catch (e) {}
+                try {
+                    database.ref('leagueSeeds').set(JSON.parse(JSON.stringify(next)), (err) => {
+                        setSeedsStatus(err
+                            ? 'Saved on this computer only - could not save to the shared database (' + (err.code || err.message) + ').'
+                            : 'Saved.');
+                    });
+                } catch (e) {
+                    setSeedsStatus('Saved on this computer only.');
+                }
+            };
+
+            // Who decides First/Second for a given match number (0-based): matches 1 and 3 -> higher seed,
+            // match 2 -> lower seed.
+            const getPositionDecider = (matchNo) => {
+                const pair = getSeedPair(selectedTeam1, selectedTeam2);
+                if (!pair) return null;
+                return matchNo % 2 === 0 ? pair.higher : pair.lower;
+            };
+
+            // Random pick that avoids questions already used (falls back to all if everything has been used).
+            const pickFresh = (list, isUsed) => {
+                const fresh = list.filter(q => !isUsed(q));
+                const pool = fresh.length > 0 ? fresh : list;
+                return pool[Math.floor(Math.random() * pool.length)];
+            };
+            const bottomsUpTextsUsedElsewhere = () => seriesMatches
+                .filter((c, ci) => c && ci !== wizardMatchIdx && ci < totalMatches)
+                .flatMap(c => [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion])
+                .filter(Boolean).map(q => q.questionText);
+
+            // Put one match's saved setup (questions + bonus + tiebreaker) into the live game variables.
+            const applyMatchCfg = (cfg) => {
+                if (!cfg) return;
+                setSelectedMatch(cfg.match || null);
+                setSelectedBonusType(cfg.bonusType || null);
+                setSelectedTiebreakerType(cfg.tiebreakerType || null);
+                setBonusType(cfg.bonusType || null);
+                setTieBreakerType(cfg.tiebreakerType || null);
+                setBottomsUpQuestion(cfg.bottomsUpQuestion || null);
+                setTieBreakerBottomsUpQuestion(cfg.tieBreakerBottomsUpQuestion || null);
+                setSelectedShootoutQuestion(cfg.selectedShootoutQuestion || null);
+                setSelectedTieBreakerShootoutQuestion(cfg.selectedTieBreakerShootoutQuestion || null);
+                if (cfg.closestToQuestions && cfg.closestToQuestions.length > 0) setClosestToQuestions(cfg.closestToQuestions);
+            };
+
+            // Same as above but only fills the wizard pickers (no live game variables), or clears them.
+            const loadWizardCfg = (cfg) => {
+                setSelectedMatch(cfg ? (cfg.match || null) : null);
+                setSelectedBonusType(cfg ? (cfg.bonusType || null) : null);
+                setSelectedTiebreakerType(cfg ? (cfg.tiebreakerType || null) : null);
+                setBottomsUpQuestion(cfg ? (cfg.bottomsUpQuestion || null) : null);
+                setTieBreakerBottomsUpQuestion(cfg ? (cfg.tieBreakerBottomsUpQuestion || null) : null);
+                setSelectedShootoutQuestion(cfg ? (cfg.selectedShootoutQuestion || null) : null);
+                setSelectedTieBreakerShootoutQuestion(cfg ? (cfg.selectedTieBreakerShootoutQuestion || null) : null);
+            };
+
+            // Put everything that belongs to ONE match back to its starting value (scores, rounds, powerups,
+            // timers, bonus/shootout/Bottoms Up state...). Teams, wins and the sheets data are left alone.
+            const resetMatchState = () => {
+                setTeam1Score(0); setTeam2Score(0);
+                setCurrentRound(1); setCurrentQuestion(1);
+                setShowCategory(false); setShowQuestion(false); setShowAnswer(false);
+                setActiveTeam(1); setActiveTimer(1); setStealAttempted(false);
+                setTeam1Time(30); setTeam2Time(15); setTimerRunning(false);
+                setTeam1Powerups({ extraTime: true, pointDoubler: true, doubleDip: true });
+                setTeam2Powerups({ extraTime: true, pointDoubler: true, doubleDip: true });
+                setCurrentPointValue(1);
+                setPowerupPhase(false); setPowerupTimer(30);
+                setTeam1DoublerActive(false); setTeam2DoublerActive(false);
+                setTeam1ExtraTimeActive(false); setTeam2ExtraTimeActive(false);
+                setTeam1ExtraTimeUsed(false); setTeam2ExtraTimeUsed(false);
+                setTeam1DoubleDipUsed(false); setTeam2DoubleDipUsed(false);
+                setDoubleDipActive(false); setDoubleDipTeam(null); setDoubleDipSecondGuess(false);
+                setBonusScore1(0); setBonusScore2(0); setBonusQuestionIndex(0);
+                setTeam1Guess(''); setTeam2Guess('');
+                setTeam1GuessSubmitted(false); setTeam2GuessSubmitted(false);
+                setShowBonusAnswer(false); setShowDistances(false); setBonusWinnerAwarded(false);
+                setShootoutBoardRevealed(false); setShootoutBoxExpanded(false); setShootoutComplete(false);
+                setShootoutRevealedAnswers([]); setShootoutShuffledAnswers([]);
+                setShootoutTurnCount(0); setShootoutActiveTeam(1); setShootoutSuddenDeath(false);
+                setShootoutSecondBoardPending(false);
+                setBottomsUpTurnNumber(1); setBottomsUpActiveTeam(1); setBottomsUpUsedAnswers([]);
+                setBottomsUpHostInput(''); setBottomsUpModalMatches([]); setBottomsUpShowModal(false);
+                setBottomsUpConfirmedAnswer(null); setBottomsUpAnimating(false); setBottomsUpAnimationValue(0);
+                setBottomsUpPhase('question'); setBottomsUpFlyingScore(false);
+                setBottomsUpShowAnswer(false); setBottomsUpGlowing(false); setShowBottomsUpOverride(false);
+                setIsTieBreaker(false);
+                setShowWinnerScreen(false); setWinnerTeam(null);
+                setShowImageOverlay(false); setCurrentImageUrl(null); setTimersExpanded(false); setImageLoadError(false);
+                setCurrentTrack(null); setIsPlaying(false); setTrackPosition(0);
+                setHostWarning('');
+                setPlayoffNoticeDismissed(false);
+            };
+
+            // Start of the whole session (match 1). t1/t2 are the teams in Team 1 / Team 2 order.
+            const beginSeries = (t1, t2) => {
+                setSelectedTeam1(t1);
+                setSelectedTeam2(t2);
+                applyMatchCfg(seriesMatches[0]);
+                setSeriesMatchIndex(0);
+                setSeriesWins({});
+                setSeriesRecorded([]);
+                setTeamsConfirmed(true);
+                setShowPositionModal(false);
+                setTimeout(() => broadcastGameState(), 100);
+                handleStartMatch();
+            };
+
+            // Between matches: reset, load the next match's setup, then flash white, fly the logos in again
+            // and show Round 1 (the same intro the first match gets, without the 10-to-1 countdown).
+            const startNextMatch = (t1, t2) => {
+                const nextIdx = seriesMatchIndex + 1;
+                const cfg = seriesMatches[nextIdx];
+                if (!cfg) return;
+                setShowPositionModal(false);
+                resetMatchState();
+                setSelectedTeam1(t1);
+                setSelectedTeam2(t2);
+                applyMatchCfg(cfg);
+                setSeriesMatchIndex(nextIdx);
+                // intro: same flags the normal match start uses
+                skipIntroRef.current = false;
+                setGameStarted(false);
+                setIntroStep(0);
+                setWhiteFading(true);
+                setBackgroundFading(true);
+                setShowIntro(true);
+                // tell the Stream to run its own copy of the intro (it is not driven by broadcasts)
+                try { database.ref(`rooms/${roomCode}/nextIntro`).set({ n: nextIdx, ts: Date.now() }); } catch (e) {}
+                setTimeout(() => broadcastGameState(), 150);
+                setTimeout(() => { if (!skipIntroRef.current) { setWhiteFading(false); setTimeout(() => broadcastGameState(), 100); } }, 1500);
+                setTimeout(() => { if (!skipIntroRef.current) { setBackgroundFading(false); setTimeout(() => broadcastGameState(), 100); } }, 3500);
+                // pick up any spelling fixes made in the sheet since the match was set up
+                setTimeout(() => { try { refreshLiveQuestionsRef.current && refreshLiveQuestionsRef.current(); } catch (e) {} }, 2500);
+            };
+
+            // Playoff: host confirms the early end of a match once one team can no longer catch up.
+            const endMatchEarly = (winnerNumber) => {
+                setTimerRunning(false);
+                setWinnerTeam(winnerNumber === 1 ? selectedTeam1 : selectedTeam2);
+                setShowWinnerScreen(true);
+                setTimeout(() => broadcastGameState(), 100);
+            };
+
+            // The host answered the First/Second question (for playoffs).
+            const handlePositionChoice = (choice) => {
+                const pair = getSeedPair(selectedTeam1, selectedTeam2);
+                if (!pair) { setShowPositionModal(false); return; }
+                const decider = getPositionDecider(positionModalFor);
+                const other = decider.id === pair.higher.id ? pair.lower : pair.higher;
+                const first = choice === 'first' ? decider : other;
+                const second = choice === 'first' ? other : decider;
+                if (positionModalFor === 0) beginSeries(first, second);
+                else startNextMatch(first, second);
             };
 
             const handleStartMatch = () => {
@@ -2156,6 +2407,7 @@
                         isPlaying,
                         trackPosition,
                         soundbarVolume,
+                        seriesInfo: { seasonType, totalMatches, matchIndex: seriesMatchIndex, wins: seriesWins, recorded: seriesRecorded, noticeDismissed: playoffNoticeDismissed },
                     };
                     
                     // Lighter syncing: after the first full send, only the fields that CHANGED are sent
@@ -3126,6 +3378,76 @@
                 })
                 : null;
 
+            // ---------- Session / playoff helpers (derived every render) ----------
+            const matchesNeededToWin = Math.floor(totalMatches / 2) + 1;
+            const winsFor = (team) => (team && seriesWins[team.id]) || 0;
+            const seriesOver = totalMatches <= 1
+                || winsFor(selectedTeam1) >= matchesNeededToWin
+                || winsFor(selectedTeam2) >= matchesNeededToWin
+                || seriesMatchIndex + 1 >= totalMatches;
+
+            // PLAYOFFS ONLY: has one team fallen out of reach? A team is out of reach when even winning every
+            // remaining question (plus its unused Point Doubler, plus the 2-point bonus if it hasn't been played)
+            // could not get it level with the leader - a tie would still go to the tiebreaker, so only
+            // "cannot even tie" counts. Only checked between questions, never mid-question.
+            const playoffClinchWinner = (() => {
+                if (seasonType !== 'playoff' || !gameStarted || showWinnerScreen || isTieBreaker) return null;
+                if (currentRound >= 14) return null;
+                // Only "at rest": nothing revealed yet for the next question (so the notice never covers a question or answer)
+                const atRest = !showQuestion && !showAnswer && (currentRound !== 7 || (!showCategory && bonusScore1 === 0 && bonusScore2 === 0
+                    && bonusQuestionIndex === 0 && bottomsUpPhase === 'question' && !shootoutBoardRevealed));
+                if (!atRest) return null;
+                const roundsDone = currentRound <= 7 ? currentRound - 1 : currentRound - 2;   // regular rounds finished (bonus excluded)
+                const played = roundsDone * 2 + (currentQuestion - 1);
+                const remaining = Math.max(0, 24 - played);
+                const bonusLeft = currentRound <= 7 ? 2 : 0;
+                const doubler = (pw, active) => (pw && pw.pointDoubler ? 1 : 0) + (active ? 1 : 0);
+                const max1 = team1Score + remaining + bonusLeft + doubler(team1Powerups, team1DoublerActive);
+                const max2 = team2Score + remaining + bonusLeft + doubler(team2Powerups, team2DoublerActive);
+                if (team1Score > max2) return 1;
+                if (team2Score > max1) return 2;
+                return null;
+            })();
+
+            // Load the shared seeds (Championship / Chump + seed number) once for the host. Falls back to the
+            // copy saved in this browser if the shared database can't be read.
+            useEffect(() => {
+                if (userMode !== 'host') return;
+                let cancelled = false;
+                try {
+                    const local = JSON.parse(localStorage.getItem('htlLeagueSeeds') || 'null');
+                    if (local && typeof local === 'object') setLeagueSeeds(local);
+                } catch (e) {}
+                try {
+                    database.ref('leagueSeeds').once('value').then((snap) => {
+                        const v = snap.val();
+                        if (!cancelled && v && typeof v === 'object') {
+                            setLeagueSeeds(v);
+                            try { localStorage.setItem('htlLeagueSeeds', JSON.stringify(v)); } catch (e) {}
+                        }
+                    }).catch(() => {});
+                } catch (e) {}
+                return () => { cancelled = true; };
+            }, [userMode]);
+
+            // Count each match's winner exactly once (works for every way a match can end).
+            useEffect(() => {
+                if (userMode !== 'host' || !showWinnerScreen || !winnerTeam) return;
+                if (seriesRecorded.includes(seriesMatchIndex)) return;
+                setSeriesRecorded(prev => prev.includes(seriesMatchIndex) ? prev : [...prev, seriesMatchIndex]);
+                setSeriesWins(prev => ({ ...prev, [winnerTeam.id]: (prev[winnerTeam.id] || 0) + 1 }));
+            }, [userMode, showWinnerScreen, winnerTeam, seriesMatchIndex, seriesRecorded]);
+
+            // Keep the saved setups for every match in the room (so Rejoin as Host can restore them).
+            // Kept in its own place in the database, written only when it changes.
+            useEffect(() => {
+                if (userMode !== 'host' || !roomCode || !gameStarted) return;
+                if (seriesMatches.length === 0) return;
+                try {
+                    database.ref(`rooms/${roomCode}/series`).set(JSON.parse(JSON.stringify({ configs: seriesMatches })));
+                } catch (e) {}
+            }, [userMode, roomCode, gameStarted, seriesMatches]);
+
             // Shuffle shootout answers when match is selected - also re-shuffles
             // whenever a different Shootout question gets selected mid-match (e.g.
             // a second-board swap after the first board runs out of answers),
@@ -3169,6 +3491,81 @@
             const currentQuestionText = currentRoundData ? (currentQuestion === 1 ? currentRoundData.question1 : currentRoundData.question2) : '';
             const currentQuestionDisplay = renderQuestionText(currentQuestionText, userMode === 'host');
             const currentAnswerText = currentRoundData ? (currentQuestion === 1 ? currentRoundData.answer1 : currentRoundData.answer2) : '';
+
+            // "Does <deciding team> want to go first or second?" (playoffs, host only)
+            const positionDecider = showPositionModal ? getPositionDecider(positionModalFor) : null;
+            const positionModalJSX = (showPositionModal && userMode === 'host' && positionDecider) ? (
+                <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 10000}}>
+                    <div className="bg-gray-900 rounded-3xl border-8 text-center" style={{borderColor: '#f59e0b', padding: '48px 64px', width: '1500px'}}>
+                        <div className="text-yellow-400 font-bold" style={{fontSize: '36px'}}>
+                            {totalMatches > 1 ? `MATCH ${positionModalFor + 1} OF ${totalMatches}` : 'PLAYOFF MATCH'}
+                        </div>
+                        <img src={`${imagePath}${positionDecider.logo}`} alt={positionDecider.name}
+                            style={{width: '260px', height: '260px', objectFit: 'contain', margin: '24px auto'}} />
+                        <div className="text-white font-bold" style={{fontSize: '64px', lineHeight: 1.15}}>
+                            Does {positionDecider.name} want to go first or second?
+                        </div>
+                        <div className="text-gray-400" style={{fontSize: '30px', marginTop: '12px'}}>
+                            First = Team 1 (left) &nbsp;·&nbsp; Second = Team 2 (right)
+                        </div>
+                        <div className="flex justify-center gap-10" style={{marginTop: '40px'}}>
+                            <button onClick={() => handlePositionChoice('first')}
+                                className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold rounded-xl border-4 border-black"
+                                style={{fontSize: '56px', padding: '28px 90px'}}>FIRST</button>
+                            <button onClick={() => handlePositionChoice('second')}
+                                className="bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl border-4 border-black"
+                                style={{fontSize: '56px', padding: '28px 90px'}}>SECOND</button>
+                        </div>
+                        <button onClick={() => setShowPositionModal(false)}
+                            className="text-gray-400 hover:text-white underline" style={{fontSize: '26px', marginTop: '32px'}}>Cancel</button>
+                    </div>
+                </div>
+            ) : null;
+
+            // Seeding screen: mark each team Championship / Chump and give it a seed number
+            const seedEditorJSX = showSeedEditor ? (
+                <div className="absolute inset-0 z-50 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.92)', borderRadius: '24px'}}>
+                    <div className="bg-gray-900 rounded-2xl border-4 flex flex-col" style={{borderColor: '#f59e0b', padding: '24px', width: '1000px', maxHeight: '1400px'}}>
+                        <h2 className="text-white font-bold text-center" style={{fontSize: '40px'}}>Seeds &amp; Brackets</h2>
+                        <p className="text-gray-400 text-center mb-4" style={{fontSize: '18px'}}>
+                            Pick Championship or Chump for each team and give it a seed number (1 = top seed). Saved automatically.
+                        </p>
+                        <div className="overflow-y-auto flex-1 pr-2">
+                            {teamsData.map(team => {
+                                const cur = leagueSeeds[team.id] || {};
+                                const dup = cur.bracket && cur.seed && Object.keys(leagueSeeds).some(k => String(k) !== String(team.id)
+                                    && leagueSeeds[k].bracket === cur.bracket && leagueSeeds[k].seed === cur.seed);
+                                const update = (patch) => {
+                                    const merged = { ...cur, ...patch };
+                                    const next = { ...leagueSeeds };
+                                    if (!merged.bracket && !merged.seed) delete next[team.id]; else next[team.id] = merged;
+                                    saveLeagueSeeds(next);
+                                };
+                                return (
+                                    <div key={team.id} className="flex items-center gap-4 mb-2 rounded-lg p-2" style={{backgroundColor: `${team.color}55`, border: dup ? '3px solid #ef4444' : '3px solid transparent'}}>
+                                        <img src={`${imagePath}${team.logo}`} alt="" style={{width: '48px', height: '48px', objectFit: 'contain'}} />
+                                        <div className="text-white font-bold flex-1" style={{fontSize: '22px'}}>{team.name}</div>
+                                        <select value={cur.bracket || ''} onChange={(e) => update({ bracket: e.target.value || undefined })}
+                                            className="bg-gray-800 text-white rounded p-2 border-2 border-gray-600" style={{fontSize: '20px'}}>
+                                            <option value="">Not set</option>
+                                            <option value="champ">Championship</option>
+                                            <option value="chump">Chump</option>
+                                        </select>
+                                        <input type="number" min="1" max="99" value={cur.seed || ''} placeholder="Seed"
+                                            onChange={(e) => { const n = parseInt(e.target.value, 10); update({ seed: Number.isFinite(n) && n > 0 ? n : undefined }); }}
+                                            className="bg-gray-800 text-white rounded p-2 border-2 border-gray-600 text-center" style={{fontSize: '20px', width: '100px'}} />
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="flex items-center justify-between mt-4">
+                            <span className="text-gray-400" style={{fontSize: '18px'}}>{seedsStatus}</span>
+                            <button onClick={() => setShowSeedEditor(false)}
+                                className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-10 rounded-lg border-4 border-black text-xl">DONE</button>
+                        </div>
+                    </div>
+                </div>
+            ) : null;
 
             // Password Login Screen
             if (!adminAuthenticated) {
@@ -3328,7 +3725,7 @@
                                                 onClick={() => {
                                                     // Rejoin as host - restore state and connect
                                                     setUserMode('host');
-                                                    restoreGameState(roomCheckData.gameState);
+                                                    restoreGameState(roomCheckData.gameState); if (roomCheckData.series && roomCheckData.series.configs) setSeriesMatches(Array.isArray(roomCheckData.series.configs) ? roomCheckData.series.configs : Object.values(roomCheckData.series.configs));
                                                     setShouldConnect(true);
                                                 }}
                                                 className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-xl"
@@ -3365,7 +3762,7 @@
                                             <button
                                                 onClick={() => {
                                                     // Resume - restore state and connect as host
-                                                    restoreGameState(roomCheckData.gameState);
+                                                    restoreGameState(roomCheckData.gameState); if (roomCheckData.series && roomCheckData.series.configs) setSeriesMatches(Array.isArray(roomCheckData.series.configs) ? roomCheckData.series.configs : Object.values(roomCheckData.series.configs));
                                                     setShouldConnect(true);
                                                 }}
                                                 className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-xl"
@@ -3605,11 +4002,14 @@
                     }}>
                         <div className="bg-gray-900 rounded-3xl p-8 border-8 w-full flex flex-col" style={{
                             borderColor: '#7d3ad4',
-                            maxWidth: '1200px',
+                            maxWidth: (adminStep === 5 && totalMatches > 1) ? '3000px' : '1200px',
                             minHeight: '700px',
                             maxHeight: '1620px', // was 90vh, now fixed to 90% of the 1800px canvas
                             overflow: 'hidden'
                         }}>
+
+                            {seedEditorJSX}
+                            {positionModalJSX}
 
                             {/* Recap Image Popup */}
                             {recapImagePopup && (
@@ -3683,7 +4083,46 @@
                             {/* ─── STEP 1: TEAM SELECTION ─── */}
                             {adminStep === 1 && (
                                 <div className="flex flex-col flex-1 min-h-0">
-                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">Team Selection</h1>
+                                    <h1 className="text-5xl font-bold text-white mb-4 text-center">Team Selection</h1>
+
+                                    {/* Session settings: regular season vs playoffs, and how many matches in this session */}
+                                    <div className="flex items-center justify-center gap-6 mb-3 flex-wrap">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-gray-300 font-bold">Season:</span>
+                                            {[['regular', 'REGULAR SEASON'], ['playoff', 'PLAYOFFS']].map(([val, label]) => (
+                                                <button key={val}
+                                                    onClick={() => { setSeasonType(val); if (val === 'regular') setTotalMatches(1); }}
+                                                    className={`font-bold py-2 px-4 rounded-lg border-4 ${seasonType === val ? 'bg-yellow-500 text-black border-yellow-300' : 'bg-gray-800 text-gray-300 border-gray-600'}`}>
+                                                    {label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        {seasonType === 'playoff' && (
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-gray-300 font-bold">Matches in this session:</span>
+                                                <button onClick={() => setTotalMatches(Math.max(1, totalMatches - 1))} className="bg-gray-700 hover:bg-gray-600 text-white font-bold w-10 h-10 rounded-lg border-2 border-gray-500 text-xl">-</button>
+                                                <span className="text-white font-bold text-2xl w-8 text-center">{totalMatches}</span>
+                                                <button onClick={() => setTotalMatches(Math.min(9, totalMatches + 1))} className="bg-gray-700 hover:bg-gray-600 text-white font-bold w-10 h-10 rounded-lg border-2 border-gray-500 text-xl">+</button>
+                                            </div>
+                                        )}
+                                        <button onClick={() => setShowSeedEditor(true)}
+                                            className="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg border-2 border-gray-500">
+                                            ⚙ SEEDS &amp; BRACKETS
+                                        </button>
+                                    </div>
+                                    {seasonType === 'playoff' && selectedTeam1 && selectedTeam2 && (() => {
+                                        const pair = getSeedPair(selectedTeam1, selectedTeam2);
+                                        const label = (sd) => sd ? `#${sd.seed} ${sd.bracket === 'champ' ? 'Championship' : sd.bracket === 'chump' ? 'Chump' : ''}`.trim() : '';
+                                        return pair ? (
+                                            <p className="text-center text-yellow-300 font-bold mb-3">
+                                                Higher seed: {pair.higher.name} ({label(pair.higherSeed)}) &nbsp;vs&nbsp; {pair.lower.name} ({label(pair.lowerSeed)})
+                                            </p>
+                                        ) : (
+                                            <p className="text-center text-red-400 font-bold mb-3">
+                                                Give both teams different seed numbers first (⚙ SEEDS &amp; BRACKETS) - the higher seed picks First or Second.
+                                            </p>
+                                        );
+                                    })()}
 
                                     {/* Selected Teams Display */}
                                     <div className="flex gap-4 mb-6">
@@ -3751,9 +4190,9 @@
                                     <div className="mt-auto pt-6 text-center">
                                         <button
                                             onClick={handleConfirmTeams}
-                                            disabled={!selectedTeam1 || !selectedTeam2}
+                                            disabled={!selectedTeam1 || !selectedTeam2 || (seasonType === 'playoff' && !getSeedPair(selectedTeam1, selectedTeam2))}
                                             className={`font-bold py-4 px-12 rounded-lg text-2xl border-4 border-black ${
-                                                selectedTeam1 && selectedTeam2
+                                                selectedTeam1 && selectedTeam2 && (seasonType !== 'playoff' || getSeedPair(selectedTeam1, selectedTeam2))
                                                     ? 'bg-green-500 hover:bg-green-600 text-white cursor-pointer'
                                                     : 'bg-gray-600 text-gray-400 cursor-not-allowed'
                                             }`}
@@ -3767,7 +4206,7 @@
                             {/* ─── STEP 2: MATCH SELECTION ─── */}
                             {adminStep === 2 && (
                                 <div className="flex flex-col flex-1 min-h-0">
-                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">Match Selection</h1>
+                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">{totalMatches > 1 ? `Match ${wizardMatchIdx + 1} of ${totalMatches} - ` : ''}Match Selection</h1>
 
                                     {/* Refresh Button */}
                                     <div className="flex justify-end mb-4">
@@ -3790,17 +4229,19 @@
                                         ) : (
                                             sheetsMatches.map(match => {
                                                 const isSelected = selectedMatch?.id === match.id;
+                                                const usedInSlot = seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && c && c.match && c.match.id === match.id);
                                                 return (
                                                     <div
                                                         key={match.id}
-                                                        onClick={() => handleMatchSelection(match)}
-                                                        className="bg-gray-800 rounded-lg p-6 border-4 cursor-pointer hover:scale-105 transition"
+                                                        onClick={() => usedInSlot < 0 && handleMatchSelection(match)}
+                                                        className={`bg-gray-800 rounded-lg p-6 border-4 transition ${usedInSlot >= 0 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105'}`}
                                                         style={{
                                                             borderColor: isSelected ? '#FFD700' : '#7d3ad4',
                                                             minWidth: '200px'
                                                         }}
                                                     >
                                                         <h3 className="text-2xl font-bold text-white mb-2">{match.name}</h3>
+                                                        {usedInSlot >= 0 && <div className="text-red-400 text-sm">Already used for Match {usedInSlot + 1}</div>}
                                                         {isSelected && (
                                                             <div className="mt-2 text-yellow-400 font-bold text-center">✓ SELECTED</div>
                                                         )}
@@ -3813,7 +4254,15 @@
                                     {/* Navigation */}
                                     <div className="mt-auto pt-6 flex justify-between">
                                         <button
-                                            onClick={() => setAdminStep(1)}
+                                            onClick={() => {
+                                                if (wizardMatchIdx > 0) {
+                                                    loadWizardCfg(seriesMatches[wizardMatchIdx - 1]);
+                                                    setWizardMatchIdx(wizardMatchIdx - 1);
+                                                    setAdminStep(4);
+                                                } else {
+                                                    setAdminStep(1);
+                                                }
+                                            }}
                                             className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-xl"
                                         >
                                             ← Back
@@ -3836,7 +4285,7 @@
                             {/* ─── STEP 3: BONUS ROUND SELECTION ─── */}
                             {adminStep === 3 && (
                                 <div className="flex flex-col flex-1 min-h-0">
-                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">Bonus Round Selection</h1>
+                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">{totalMatches > 1 ? `Match ${wizardMatchIdx + 1} of ${totalMatches} - ` : ''}Bonus Round Selection</h1>
 
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
@@ -3899,13 +4348,13 @@
                                         <button
                                             onClick={() => {
                                                 if (selectedBonusType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
-                                                    const randomIndex = Math.floor(Math.random() * bottomsUpQuestions.length);
-                                                    setBottomsUpQuestion(bottomsUpQuestions[randomIndex]);
+                                                    const usedTexts = bottomsUpTextsUsedElsewhere();
+                                                    setBottomsUpQuestion(pickFresh(bottomsUpQuestions, q => usedTexts.includes(q.questionText)));
                                                 }
                                                 if (selectedBonusType === 'shootout' && shootoutQuestions.length > 0) {
-                                                    const randomIndex = Math.floor(Math.random() * shootoutQuestions.length);
-                                                    setSelectedShootoutQuestion(shootoutQuestions[randomIndex]);
-                                                    setUsedShootoutColIndices(prev => [...prev, shootoutQuestions[randomIndex].colIndex]);
+                                                    const pick = pickFresh(shootoutQuestions, q => usedShootoutColIndices.includes(q.colIndex));
+                                                    setSelectedShootoutQuestion(pick);
+                                                    setUsedShootoutColIndices(prev => [...prev, pick.colIndex]);
                                                 }
                                                 setAdminStep(4);
                                             }}
@@ -3925,7 +4374,7 @@
                             {/* ─── STEP 4: TIEBREAKER SELECTION ─── */}
                             {adminStep === 4 && (
                                 <div className="flex flex-col flex-1 min-h-0">
-                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">Tiebreaker Selection</h1>
+                                    <h1 className="text-5xl font-bold text-white mb-8 text-center">{totalMatches > 1 ? `Match ${wizardMatchIdx + 1} of ${totalMatches} - ` : ''}Tiebreaker Selection</h1>
 
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
@@ -4002,16 +4451,37 @@
                                         </button>
                                         <button
                                             onClick={() => {
+                                                let tbShootout = selectedTieBreakerShootoutQuestion;
+                                                let tbBottoms = tieBreakerBottomsUpQuestion;
                                                 if (selectedTiebreakerType === 'shootout' && shootoutQuestions.length > 0) {
-                                                    const randomIndex = Math.floor(Math.random() * shootoutQuestions.length);
-                                                    setSelectedTieBreakerShootoutQuestion(shootoutQuestions[randomIndex]);
-                                                    setUsedShootoutColIndices(prev => [...prev, shootoutQuestions[randomIndex].colIndex]);
+                                                    tbShootout = pickFresh(shootoutQuestions, q => usedShootoutColIndices.includes(q.colIndex));
+                                                    setSelectedTieBreakerShootoutQuestion(tbShootout);
+                                                    setUsedShootoutColIndices(prev => [...prev, tbShootout.colIndex]);
                                                 }
                                                 if (selectedTiebreakerType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
-                                                    const randomIndex = Math.floor(Math.random() * bottomsUpQuestions.length);
-                                                    setTieBreakerBottomsUpQuestion(bottomsUpQuestions[randomIndex]);
+                                                    const usedTexts = bottomsUpTextsUsedElsewhere();
+                                                    tbBottoms = pickFresh(bottomsUpQuestions, q => usedTexts.includes(q.questionText) || (selectedBonusType === 'bottomsUp' && bottomsUpQuestion && q.questionText === bottomsUpQuestion.questionText));
+                                                    setTieBreakerBottomsUpQuestion(tbBottoms);
                                                 }
-                                                setAdminStep(5);
+                                                // Save this match's whole setup, then either set up the next match or show the recap
+                                                const cfg = {
+                                                    match: selectedMatch,
+                                                    bonusType: selectedBonusType,
+                                                    tiebreakerType: selectedTiebreakerType,
+                                                    bottomsUpQuestion: bottomsUpQuestion || null,
+                                                    tieBreakerBottomsUpQuestion: tbBottoms || null,
+                                                    selectedShootoutQuestion: selectedShootoutQuestion || null,
+                                                    selectedTieBreakerShootoutQuestion: tbShootout || null,
+                                                    closestToQuestions: rotateList(closestToQuestions, 5 * wizardMatchIdx)
+                                                };
+                                                setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
+                                                if (wizardMatchIdx < totalMatches - 1) {
+                                                    loadWizardCfg(seriesMatches[wizardMatchIdx + 1] || null);
+                                                    setWizardMatchIdx(wizardMatchIdx + 1);
+                                                    setAdminStep(2);
+                                                } else {
+                                                    setAdminStep(5);
+                                                }
                                             }}
                                             disabled={!selectedTiebreakerType}
                                             className={`font-bold py-4 px-12 rounded-lg text-xl border-4 border-black ${
@@ -4049,10 +4519,13 @@
                                         </div>
                                     </div>
 
+                                    <div className="flex gap-6 items-start" style={{overflowX: 'auto'}}>
+                                    {seriesMatches.slice(0, totalMatches).map((cfg, mi) => cfg && (
+                                    <div key={mi} style={{flex: '1 1 0', minWidth: totalMatches > 1 ? '880px' : '0'}}>
                                     {/* Match Questions */}
                                     <div className="bg-gray-800 rounded-lg p-6 border-4 mb-6" style={{borderColor: '#7d3ad4'}}>
-                                        <h2 className="text-2xl font-bold text-purple-400 mb-4">Match: {selectedMatch?.name}</h2>
-                                        {selectedMatch?.rounds.map((round, index) => (
+                                        <h2 className="text-2xl font-bold text-purple-400 mb-4">{totalMatches > 1 ? `Match ${mi + 1}: ` : 'Match: '}{cfg.match?.name}</h2>
+                                        {cfg.match?.rounds.map((round, index) => (
                                             <div key={index} className="mb-4 pb-4 border-b border-gray-700">
                                                 <p className="text-cyan-400 font-bold text-sm mb-1">
                                                     Round {index + 1} — {round.category}
@@ -4150,18 +4623,18 @@
                                     {/* Bonus Round */}
                                     <div className="bg-gray-800 rounded-lg p-6 border-4 mb-6" style={{borderColor: '#7d3ad4'}}>
                                         <h2 className="text-2xl font-bold text-purple-400 mb-4">
-                                            Bonus Round: {selectedBonusType === 'closestTo' ? 'Closest To' : selectedBonusType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
+                                            Bonus Round: {cfg.bonusType === 'closestTo' ? 'Closest To' : cfg.bonusType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
                                         </h2>
-                                        {selectedBonusType === 'closestTo' ? (
-                                            closestToQuestions.slice(0, 5).map((q, i) => (
+                                        {cfg.bonusType === 'closestTo' ? (
+                                            (cfg.closestToQuestions || []).slice(0, 5).map((q, i) => (
                                                 <div key={i} className="mb-3 pb-3 border-b border-gray-700">
                                                     <p className="text-white text-sm">Q{i + 1}: {renderQuestionText(q.question, true)}</p>
                                                     <p className="text-yellow-400 text-sm">A: {q.answer}</p>
                                                 </div>
                                             ))
-                                        ) : selectedBonusType === 'bottomsUp' ? (
+                                        ) : cfg.bonusType === 'bottomsUp' ? (
                                             (() => {
-                                                const q = bottomsUpQuestion;
+                                                const q = cfg.bottomsUpQuestion;
                                                 return q ? (
                                                     <div>
                                                         <p className="text-white text-sm mb-2">{q.questionText}</p>
@@ -4174,7 +4647,7 @@
                                             })()
                                         ) : (
                                             (() => {
-                                                const q = shootoutQuestion;
+                                                const q = cfg.selectedShootoutQuestion || shootoutQuestions[0];
                                                 return q ? (
                                                     <div>
                                                         <p className="text-white text-sm mb-2">{q.longQuestion}</p>
@@ -4192,18 +4665,18 @@
                                     {/* Tiebreaker */}
                                     <div className="bg-gray-800 rounded-lg p-6 border-4 mb-8" style={{borderColor: '#7d3ad4'}}>
                                         <h2 className="text-2xl font-bold text-purple-400 mb-4">
-                                            Tiebreaker: {selectedTiebreakerType === 'closestTo' ? 'Closest To' : selectedTiebreakerType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
+                                            Tiebreaker: {cfg.tiebreakerType === 'closestTo' ? 'Closest To' : cfg.tiebreakerType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
                                         </h2>
-                                        {selectedTiebreakerType === 'closestTo' ? (
-                                            closestToQuestions.slice(0, 5).map((q, i) => (
+                                        {cfg.tiebreakerType === 'closestTo' ? (
+                                            (cfg.closestToQuestions || []).slice(0, 5).map((q, i) => (
                                                 <div key={i} className="mb-3 pb-3 border-b border-gray-700">
                                                     <p className="text-white text-sm">Q{i + 1}: {renderQuestionText(q.question, true)}</p>
                                                     <p className="text-yellow-400 text-sm">A: {q.answer}</p>
                                                 </div>
                                             ))
-                                        ) : selectedTiebreakerType === 'bottomsUp' ? (
+                                        ) : cfg.tiebreakerType === 'bottomsUp' ? (
                                             (() => {
-                                                const q = tieBreakerBottomsUpQuestion || bottomsUpQuestion;
+                                                const q = cfg.tieBreakerBottomsUpQuestion || cfg.bottomsUpQuestion;
                                                 return q ? (
                                                     <div>
                                                         <p className="text-white text-sm mb-2">{q.questionText}</p>
@@ -4216,7 +4689,7 @@
                                             })()
                                         ) : (
                                             (() => {
-                                                const q = tieBreakerShootoutQuestion;
+                                                const q = cfg.selectedTieBreakerShootoutQuestion || shootoutQuestions[0];
                                                 return q ? (
                                                     <div>
                                                         <p className="text-white text-sm mb-2">{q.longQuestion}</p>
@@ -4231,19 +4704,30 @@
                                         )}
                                     </div>
                                     </div>
+                                    ))}
+                                    </div>
+                                    </div>
 
                                     {/* Navigation */}
                                     <div className="mt-auto pt-6 flex justify-between">
                                         <button
-                                            onClick={() => setAdminStep(4)}
+                                            onClick={() => {
+                                                setWizardMatchIdx(totalMatches - 1);
+                                                loadWizardCfg(seriesMatches[totalMatches - 1]);
+                                                setAdminStep(4);
+                                            }}
                                             className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-4 px-8 rounded-lg border-4 border-black text-xl"
                                         >
                                             ← Go Back
                                         </button>
                                         <button
                                             onClick={() => {
-                                                handleConfirmSetup();
-                                                handleStartMatch();
+                                                if (seasonType === 'playoff') {
+                                                    setPositionModalFor(0);
+                                                    setShowPositionModal(true);
+                                                } else {
+                                                    beginSeries(selectedTeam1, selectedTeam2);
+                                                }
                                             }}
                                             className="bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-12 rounded-lg border-4 border-black text-2xl"
                                         >
@@ -5328,6 +5812,38 @@
                         </div>
                     )}
 
+                    {positionModalJSX}
+
+                    {/* PLAYOFFS: "out of reach" notice - shown on Host AND Stream; the host decides with a button. */}
+                    {gameStarted && playoffClinchWinner && !playoffNoticeDismissed && !showWinnerScreen && (
+                        <div className="absolute font-bold text-white text-center" style={{
+                            top: '930px', left: '50%', transform: 'translateX(-50%)', zIndex: 75,
+                            backgroundColor: 'rgba(17,24,39,0.97)', border: '6px solid #f59e0b', borderRadius: '24px',
+                            padding: '24px 48px', fontSize: '48px', width: '1500px', lineHeight: 1.2
+                        }}>
+                            <div style={{color: '#f87171'}}>
+                                {(playoffClinchWinner === 1 ? selectedTeam2?.name : selectedTeam1?.name) || 'This team'} CAN'T CATCH UP - OUT OF REACH
+                            </div>
+                            <div style={{fontSize: '38px', color: '#fde047', marginTop: '10px'}}>
+                                {(playoffClinchWinner === 1 ? selectedTeam1?.name : selectedTeam2?.name) || 'The leader'} wins the match
+                            </div>
+                            {userMode === 'host' && (
+                                <div className="flex justify-center gap-8" style={{marginTop: '20px'}}>
+                                    <button onClick={() => endMatchEarly(playoffClinchWinner)}
+                                        className="bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg border-4 border-black"
+                                        style={{fontSize: '32px', padding: '12px 36px'}}>
+                                        END MATCH - {(playoffClinchWinner === 1 ? selectedTeam1?.name : selectedTeam2?.name)?.toUpperCase()} WINS
+                                    </button>
+                                    <button onClick={() => setPlayoffNoticeDismissed(true)}
+                                        className="bg-gray-600 hover:bg-gray-500 text-white font-bold rounded-lg border-4 border-black"
+                                        style={{fontSize: '32px', padding: '12px 36px'}}>
+                                        KEEP PLAYING
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* Winner Screen Overlay */}
                     {showWinnerScreen && (
                         <>
@@ -5412,19 +5928,51 @@
                                         transform: 'translateX(-50%)',
                                         whiteSpace: 'nowrap'
                                     }}>
-                                        {winnerTeam?.name} WINS!
+                                        {totalMatches > 1
+                                            ? (seriesOver ? `${winnerTeam?.name} WINS THE SERIES!` : `${winnerTeam?.name} WINS GAME ${seriesMatchIndex + 1}!`)
+                                            : `${winnerTeam?.name} WINS!`}
                                     </div>
+                                    {totalMatches > 1 && (
+                                        <div className="font-black text-white" style={{
+                                            WebkitTextStroke: '3px black',
+                                            fontSize: '64px',
+                                            position: 'absolute',
+                                            bottom: '330px',
+                                            left: '50%',
+                                            transform: 'translateX(-50%)',
+                                            whiteSpace: 'nowrap',
+                                            animation: 'fadeIn 1.5s ease-in 1s both'
+                                        }}>
+                                            SERIES: {selectedTeam1?.name} {winsFor(selectedTeam1)} - {winsFor(selectedTeam2)} {selectedTeam2?.name}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
-                            {/* End Match Button - Host Only */}
+                            {/* Next Match / End Match Buttons - Host Only */}
                             {userMode === 'host' && (
-                                <div className="absolute bottom-8 left-50% z-50" style={{
+                                <div className="absolute bottom-8 left-50% z-50 flex gap-8" style={{
                                     position: 'fixed',
                                     bottom: '40px',
                                     left: '50%',
                                     transform: 'translateX(-50%)'
                                 }}>
+                                    {totalMatches > 1 && !seriesOver && (
+                                        <button
+                                            onClick={() => {
+                                                if (seasonType === 'playoff') {
+                                                    setPositionModalFor(seriesMatchIndex + 1);
+                                                    setShowPositionModal(true);
+                                                } else {
+                                                    startNextMatch(selectedTeam1, selectedTeam2);
+                                                }
+                                            }}
+                                            className="bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-12 rounded-lg border-4 border-black text-2xl"
+                                            style={{pointerEvents: 'auto'}}
+                                        >
+                                            NEXT MATCH ({seriesMatchIndex + 2} of {totalMatches})
+                                        </button>
+                                    )}
                                     <button
                                         onClick={() => {
                                             // Delete the Firebase room data
@@ -5435,7 +5983,7 @@
                                         className="bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-12 rounded-lg border-4 border-black text-2xl"
                                         style={{pointerEvents: 'auto'}}
                                     >
-                                        END MATCH
+                                        {totalMatches > 1 && !seriesOver ? 'END SESSION' : 'END MATCH'}
                                     </button>
                                 </div>
                             )}
