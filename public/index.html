@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 6, 2026 8:54 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 8, 2026 9:17 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -3895,14 +3895,17 @@
                 const played = roundsDone * 2 + (currentQuestion - 1);
                 const remaining = Math.max(0, 24 - played);
                 const bonusLeft = currentRound <= 7 ? 2 : 0;
-                const available = remaining + bonusLeft;
+                // Each team can double one question (+1 point each) if it hasn't used its doubler yet (or has it active right now)
+                const dbl1 = (team1Powerups.pointDoubler || team1DoublerActive) ? 1 : 0;
+                const dbl2 = (team2Powerups.pointDoubler || team2DoublerActive) ? 1 : 0;
+                const available = remaining + bonusLeft + dbl1 + dbl2;   // 24 + 2 + 1 + 1 = 28 before any answers
                 const diff = Math.abs(team1Score - team2Score);
                 if (diff === 0) return `Tied  -  ${available} points still available`;
                 const trailer = team1Score < team2Score ? selectedTeam1 : selectedTeam2;
-                const trailPw = team1Score < team2Score ? team1Powerups : team2Powerups;
-                const trailAct = team1Score < team2Score ? team1DoublerActive : team2DoublerActive;
-                const dbl = (trailPw && trailPw.pointDoubler ? 1 : 0) + (trailAct ? 1 : 0);
-                if (diff > available + dbl) return `${trailer?.name} trails by ${diff}  -  only ${available} points left (out of reach)`;
+                const trailDbl = team1Score < team2Score ? dbl1 : dbl2;
+                // the trailing team can only win the questions + bonus + its OWN doubler (not the leader's)
+                const trailerMax = remaining + bonusLeft + trailDbl;
+                if (diff > trailerMax) return `${trailer?.name} trails by ${diff}  -  only ${available} points left (out of reach)`;
                 return `${trailer?.name} trails by ${diff} (needs ${diff} to tie)  -  ${available} points still available`;
             })();
 
