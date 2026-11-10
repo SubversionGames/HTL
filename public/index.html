@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 8, 2026 9:17 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 9, 2026 5:47 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -1159,6 +1159,7 @@
             const [seasonType, setSeasonType] = useState('regular');        // 'regular' | 'playoff'
             const [totalMatches, setTotalMatches] = useState(1);            // how many matches in this session
             const [seriesMatches, setSeriesMatches] = useState([]);         // one saved setup per match (questions, bonus, tiebreaker)
+            const [seriesOrder, setSeriesOrder] = useState([]);              // PLAYOFFS: random play order. seriesOrder[g] = which built match is played as game g+1
             const [wizardMatchIdx, setWizardMatchIdx] = useState(0);        // which match the wizard is currently setting up (0-based)
             const [seriesMatchIndex, setSeriesMatchIndex] = useState(0);    // which match is being played right now (0-based)
             const [seriesWins, setSeriesWins] = useState({});               // { teamId: matches won }
@@ -1697,7 +1698,7 @@
                 closestToQuestions, bottomsUpQuestion, tieBreakerBottomsUpQuestion,
                 selectedShootoutQuestion, selectedTieBreakerShootoutQuestion,
                 // Multi-match sessions / playoffs
-                seasonType, totalMatches, seriesMatchIndex, seriesWins, seriesRecorded, playoffNoticeDismissed, teamRecords, bracketKey
+                seasonType, totalMatches, seriesMatchIndex, seriesOrder, seriesWins, seriesRecorded, playoffNoticeDismissed, teamRecords, bracketKey
             ]);
             
             // Intro animation sequence
@@ -2004,6 +2005,7 @@
                     setSeriesMatchIndex(gameState.seriesInfo.matchIndex || 0);
                     setSeriesWins(gameState.seriesInfo.wins || {});
                     setSeriesRecorded(gameState.seriesInfo.recorded || []);
+                    setSeriesOrder(Array.isArray(gameState.seriesInfo.order) ? gameState.seriesInfo.order : Object.values(gameState.seriesInfo.order || {}));
                     setPlayoffNoticeDismissed(!!gameState.seriesInfo.noticeDismissed);
                 }
 
@@ -2669,11 +2671,20 @@
                 setPlayoffNoticeDismissed(false);
             };
 
+            // Which saved match setup is played as game number g (0-based)? Random order for playoff series, otherwise 1, 2, 3...
+            const orderIdxFor = (g) => (seriesOrder.length === totalMatches && seriesOrder[g] !== undefined) ? seriesOrder[g] : g;
+            const cfgForGame = (g) => seriesMatches[orderIdxFor(g)];
+            const shuffledOrder = (n) => {
+                const a = Array.from({ length: n }, (_, i) => i);
+                for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+                return a;
+            };
+
             // Start of the whole session (match 1). t1/t2 are the teams in Team 1 / Team 2 order.
             const beginSeries = (t1, t2) => {
                 setSelectedTeam1(t1);
                 setSelectedTeam2(t2);
-                applyMatchCfg(seriesMatches[0]);
+                applyMatchCfg(cfgForGame(0));
                 setSeriesMatchIndex(0);
                 setSeriesWins({});
                 setSeriesRecorded([]);
@@ -2687,7 +2698,7 @@
             // and show Round 1 (the same intro the first match gets, without the 10-to-1 countdown).
             const startNextMatch = (t1, t2) => {
                 const nextIdx = seriesMatchIndex + 1;
-                const cfg = seriesMatches[nextIdx];
+                const cfg = cfgForGame(nextIdx);
                 if (!cfg) return;
                 setShowPositionModal(false);
                 resetMatchState();
@@ -2887,7 +2898,7 @@
                         isPlaying,
                         trackPosition,
                         soundbarVolume,
-                        teamRecords, bracketInfo: hostBracketInfo, seriesInfo: { seasonType, totalMatches, matchIndex: seriesMatchIndex, wins: seriesWins, recorded: seriesRecorded, noticeDismissed: playoffNoticeDismissed },
+                        teamRecords, bracketInfo: hostBracketInfo, seriesInfo: { seasonType, totalMatches, matchIndex: seriesMatchIndex, order: seriesOrder, wins: seriesWins, recorded: seriesRecorded, noticeDismissed: playoffNoticeDismissed },
                     };
                     
                     // Lighter syncing: after the first full send, only the fields that CHANGED are sent
@@ -3957,9 +3968,9 @@
                 if (userMode !== 'host' || !roomCode || !gameStarted) return;
                 if (seriesMatches.length === 0) return;
                 try {
-                    database.ref(`rooms/${roomCode}/series`).set(JSON.parse(JSON.stringify({ configs: seriesMatches })));
+                    database.ref(`rooms/${roomCode}/series`).set(JSON.parse(JSON.stringify({ configs: seriesMatches, order: seriesOrder })));
                 } catch (e) {}
-            }, [userMode, roomCode, gameStarted, seriesMatches]);
+            }, [userMode, roomCode, gameStarted, seriesMatches, seriesOrder]);
 
             // Shuffle shootout answers when match is selected - also re-shuffles
             // whenever a different Shootout question gets selected mid-match (e.g.
@@ -4011,8 +4022,18 @@
                 <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 10000}}>
                     <div className="bg-gray-900 rounded-3xl border-8 text-center" style={{borderColor: '#f59e0b', padding: '48px 64px', width: '1500px'}}>
                         <div className="text-yellow-400 font-bold" style={{fontSize: '36px'}}>
-                            {totalMatches > 1 ? `MATCH ${positionModalFor + 1} OF ${totalMatches}` : 'PLAYOFF MATCH'}
+                            {totalMatches > 1 ? `GAME ${positionModalFor + 1} OF ${totalMatches}` : 'PLAYOFF MATCH'}
                         </div>
+                        {totalMatches > 1 && (
+                            <div className="text-white font-bold" style={{fontSize: '46px', marginTop: '10px'}}>
+                                Now playing: <span style={{color: '#22d3ee'}}>{cfgForGame(positionModalFor)?.match?.name || '?'}</span>
+                            </div>
+                        )}
+                        {totalMatches > 1 && positionModalFor === 0 && (
+                            <div className="text-gray-300" style={{fontSize: '28px', marginTop: '8px'}}>
+                                Order: {Array.from({ length: totalMatches }, (_, g) => `Game ${g + 1} = ${cfgForGame(g)?.match?.name || '?'}`).join('  \u00b7  ')}
+                            </div>
+                        )}
                         <img src={`${imagePath}${positionDecider.logo}`} alt={positionDecider.name}
                             style={{width: '260px', height: '260px', objectFit: 'contain', margin: '24px auto'}} />
                         <div className="text-white font-bold" style={{fontSize: '64px', lineHeight: 1.15}}>
@@ -5377,6 +5398,8 @@
                                         <button
                                             onClick={() => {
                                                 if (seasonType === 'playoff') {
+                                                    // randomize which built match is played first, second, third (decided once; kept if you cancel and come back)
+                                                    if (totalMatches > 1 && seriesOrder.length !== totalMatches) setSeriesOrder(shuffledOrder(totalMatches));
                                                     setPositionModalFor(0);
                                                     setShowPositionModal(true);
                                                 } else {
