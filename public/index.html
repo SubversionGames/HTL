@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 9, 2026 5:47 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 9, 2026 6:05 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -1160,6 +1160,7 @@
             const [totalMatches, setTotalMatches] = useState(1);            // how many matches in this session
             const [seriesMatches, setSeriesMatches] = useState([]);         // one saved setup per match (questions, bonus, tiebreaker)
             const [seriesOrder, setSeriesOrder] = useState([]);              // PLAYOFFS: random play order. seriesOrder[g] = which built match is played as game g+1
+            const [lockedSlots, setLockedSlots] = useState([]);              // lockedSlots[i] = true when Match i+1 is locked in (its match can't be used by other slots, its picks are frozen)
             const [wizardMatchIdx, setWizardMatchIdx] = useState(0);        // which match the wizard is currently setting up (0-based)
             const [seriesMatchIndex, setSeriesMatchIndex] = useState(0);    // which match is being played right now (0-based)
             const [seriesWins, setSeriesWins] = useState({});               // { teamId: matches won }
@@ -2678,6 +2679,44 @@
                 const a = Array.from({ length: n }, (_, i) => i);
                 for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
                 return a;
+            };
+
+            // Wizard: save this match's whole setup (questions + bonus + tiebreaker), optionally lock it, then go to the next match or the recap.
+            const saveWizardSlot = (lock) => {
+                let tbShootout = selectedTieBreakerShootoutQuestion;
+                let tbBottoms = tieBreakerBottomsUpQuestion;
+                // A locked slot keeps the picks it already has; only unlocked slots draw fresh tiebreaker questions
+                if (!lockedSlots[wizardMatchIdx]) {
+                    if (selectedTiebreakerType === 'shootout' && shootoutQuestions.length > 0) {
+                        tbShootout = pickFresh(shootoutQuestions, q => usedShootoutColIndices.includes(q.colIndex));
+                        setSelectedTieBreakerShootoutQuestion(tbShootout);
+                        setUsedShootoutColIndices(prev => [...prev, tbShootout.colIndex]);
+                    }
+                    if (selectedTiebreakerType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
+                        const usedTexts = bottomsUpTextsUsedElsewhere();
+                        tbBottoms = pickFresh(bottomsUpQuestions, q => usedTexts.includes(q.questionText) || (selectedBonusType === 'bottomsUp' && bottomsUpQuestion && q.questionText === bottomsUpQuestion.questionText));
+                        setTieBreakerBottomsUpQuestion(tbBottoms);
+                    }
+                }
+                const cfg = {
+                    match: selectedMatch,
+                    bonusType: selectedBonusType,
+                    tiebreakerType: selectedTiebreakerType,
+                    bottomsUpQuestion: bottomsUpQuestion || null,
+                    tieBreakerBottomsUpQuestion: tbBottoms || null,
+                    selectedShootoutQuestion: selectedShootoutQuestion || null,
+                    selectedTieBreakerShootoutQuestion: tbShootout || null,
+                    closestToQuestions: rotateList(closestToQuestions, 10 * wizardMatchIdx)
+                };
+                setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
+                if (lock) setLockedSlots(prev => { const a = prev.slice(); a[wizardMatchIdx] = true; return a; });
+                if (wizardMatchIdx < totalMatches - 1) {
+                    loadWizardCfg(seriesMatches[wizardMatchIdx + 1] || null);
+                    setWizardMatchIdx(wizardMatchIdx + 1);
+                    setAdminStep(2);
+                } else {
+                    setAdminStep(5);
+                }
             };
 
             // Start of the whole session (match 1). t1/t2 are the teams in Team 1 / Team 2 order.
@@ -4889,21 +4928,22 @@
                                         ) : (
                                             sheetsMatches.map(match => {
                                                 const isSelected = selectedMatch?.id === match.id;
-                                                const usedInSlot = seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && c && c.match && c.match.id === match.id);
+                                                const usedInSlot = seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && lockedSlots[ci] && c && c.match && c.match.id === match.id);
+                                                const thisSlotLocked = !!lockedSlots[wizardMatchIdx];
                                                 return (
                                                     <div
                                                         key={match.id}
-                                                        onClick={() => usedInSlot < 0 && handleMatchSelection(match)}
-                                                        className={`bg-gray-800 rounded-lg p-6 border-4 transition ${usedInSlot >= 0 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105'}`}
+                                                        onClick={() => { if (usedInSlot < 0 && !thisSlotLocked) setSelectedMatch(isSelected ? null : match); }}
+                                                        className={`bg-gray-800 rounded-lg p-6 border-4 transition ${(usedInSlot >= 0 || (thisSlotLocked && !isSelected)) ? 'opacity-40 cursor-not-allowed' : (thisSlotLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:scale-105')}`}
                                                         style={{
                                                             borderColor: isSelected ? '#FFD700' : '#7d3ad4',
                                                             minWidth: '200px'
                                                         }}
                                                     >
                                                         <h3 className="text-2xl font-bold text-white mb-2">{match.name}</h3>
-                                                        {usedInSlot >= 0 && <div className="text-red-400 text-sm">Already used for Match {usedInSlot + 1}</div>}
+                                                        {usedInSlot >= 0 && <div className="text-red-400 text-sm">Locked in Match {usedInSlot + 1}</div>}
                                                         {isSelected && (
-                                                            <div className="mt-2 text-yellow-400 font-bold text-center">✓ SELECTED</div>
+                                                            <div className="mt-2 text-yellow-400 font-bold text-center">{thisSlotLocked ? '🔒 LOCKED' : '✓ SELECTED (click again to un-select)'}</div>
                                                         )}
                                                     </div>
                                                 );
@@ -4927,6 +4967,14 @@
                                         >
                                             ← Back
                                         </button>
+                                        {lockedSlots[wizardMatchIdx] && (
+                                            <button
+                                                onClick={() => setLockedSlots(prev => { const a = prev.slice(); a[wizardMatchIdx] = false; return a; })}
+                                                className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 px-8 rounded-lg border-4 border-black text-xl"
+                                            >
+                                                🔓 UNLOCK MATCH {wizardMatchIdx + 1}
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => setAdminStep(3)}
                                             disabled={!selectedMatch}
@@ -4950,7 +4998,7 @@
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
                                         <div
-                                            onClick={() => setSelectedBonusType('bottomsUp')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('bottomsUp')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'bottomsUp' ? '#FFD700' : '#7d3ad4',
@@ -4966,7 +5014,7 @@
                                         
                                         {/* Closest To Card */}
                                         <div
-                                            onClick={() => setSelectedBonusType('closestTo')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('closestTo')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'closestTo' ? '#FFD700' : '#7d3ad4',
@@ -4982,7 +5030,7 @@
 
                                         {/* Shootout Card */}
                                         <div
-                                            onClick={() => setSelectedBonusType('shootout')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('shootout')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'shootout' ? '#FFD700' : '#7d3ad4',
@@ -5039,7 +5087,7 @@
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
                                         <div
-                                            onClick={() => selectedBonusType !== 'bottomsUp' && setSelectedTiebreakerType('bottomsUp')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'bottomsUp' && setSelectedTiebreakerType('bottomsUp')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'bottomsUp' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5060,7 +5108,7 @@
                                         
                                         {/* Closest To Card */}
                                         <div
-                                            onClick={() => selectedBonusType !== 'closestTo' && setSelectedTiebreakerType('closestTo')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'closestTo' && setSelectedTiebreakerType('closestTo')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'closestTo' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5081,7 +5129,7 @@
 
                                         {/* Shootout Card */}
                                         <div
-                                            onClick={() => selectedBonusType !== 'shootout' && setSelectedTiebreakerType('shootout')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'shootout' && setSelectedTiebreakerType('shootout')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'shootout' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5109,40 +5157,24 @@
                                         >
                                             ← Back
                                         </button>
+                                        {lockedSlots[wizardMatchIdx] ? (
+                                            <button
+                                                onClick={() => setLockedSlots(prev => { const a = prev.slice(); a[wizardMatchIdx] = false; return a; })}
+                                                className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 px-8 rounded-lg border-4 border-black text-xl"
+                                            >
+                                                🔓 UNLOCK MATCH {wizardMatchIdx + 1}
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={() => saveWizardSlot(true)}
+                                                disabled={!selectedTiebreakerType}
+                                                className={`font-bold py-4 px-8 rounded-lg border-4 border-black text-xl ${selectedTiebreakerType ? 'bg-purple-600 hover:bg-purple-500 text-white cursor-pointer' : 'bg-gray-600 text-gray-400 cursor-not-allowed'}`}
+                                            >
+                                                🔒 LOCK MATCH {wizardMatchIdx + 1} &amp; CONTINUE
+                                            </button>
+                                        )}
                                         <button
-                                            onClick={() => {
-                                                let tbShootout = selectedTieBreakerShootoutQuestion;
-                                                let tbBottoms = tieBreakerBottomsUpQuestion;
-                                                if (selectedTiebreakerType === 'shootout' && shootoutQuestions.length > 0) {
-                                                    tbShootout = pickFresh(shootoutQuestions, q => usedShootoutColIndices.includes(q.colIndex));
-                                                    setSelectedTieBreakerShootoutQuestion(tbShootout);
-                                                    setUsedShootoutColIndices(prev => [...prev, tbShootout.colIndex]);
-                                                }
-                                                if (selectedTiebreakerType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
-                                                    const usedTexts = bottomsUpTextsUsedElsewhere();
-                                                    tbBottoms = pickFresh(bottomsUpQuestions, q => usedTexts.includes(q.questionText) || (selectedBonusType === 'bottomsUp' && bottomsUpQuestion && q.questionText === bottomsUpQuestion.questionText));
-                                                    setTieBreakerBottomsUpQuestion(tbBottoms);
-                                                }
-                                                // Save this match's whole setup, then either set up the next match or show the recap
-                                                const cfg = {
-                                                    match: selectedMatch,
-                                                    bonusType: selectedBonusType,
-                                                    tiebreakerType: selectedTiebreakerType,
-                                                    bottomsUpQuestion: bottomsUpQuestion || null,
-                                                    tieBreakerBottomsUpQuestion: tbBottoms || null,
-                                                    selectedShootoutQuestion: selectedShootoutQuestion || null,
-                                                    selectedTieBreakerShootoutQuestion: tbShootout || null,
-                                                    closestToQuestions: rotateList(closestToQuestions, 10 * wizardMatchIdx)
-                                                };
-                                                setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
-                                                if (wizardMatchIdx < totalMatches - 1) {
-                                                    loadWizardCfg(seriesMatches[wizardMatchIdx + 1] || null);
-                                                    setWizardMatchIdx(wizardMatchIdx + 1);
-                                                    setAdminStep(2);
-                                                } else {
-                                                    setAdminStep(5);
-                                                }
-                                            }}
+                                            onClick={() => saveWizardSlot(false)}
                                             disabled={!selectedTiebreakerType}
                                             className={`font-bold py-4 px-12 rounded-lg text-xl border-4 border-black ${
                                                 selectedTiebreakerType
