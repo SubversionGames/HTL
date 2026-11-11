@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 10:42 AM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 10:54 AM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -3100,9 +3100,9 @@
             const handleBonusNext = () => {
                 // Check if someone won (first to 3 points)
                 if (bonusScore1 >= 3 || bonusScore2 >= 3) {
-                    // ONE match: the Closest To bonus reserves questions 1-5, so a Closest To tiebreaker always starts at question 6.
-                    // 2+ match series: the next Closest To (bonus or tiebreaker) continues down the shared list.
-                    setClosestToBase(totalMatches === 1 && currentRound === 7 && bonusType === 'closestTo' ? Math.max(closestToConsumed, 5) : closestToConsumed);
+                    // The next Closest To (bonus or tiebreaker) continues down the shuffled list, so nothing asked is ever asked again.
+                    // (In a single match Closest To is only ever the bonus OR the tiebreaker, never both.)
+                    setClosestToBase(closestToConsumed);
                     // Award points to match winner
                     if (currentRound === 14) {
                         // Tie-breaker is only worth 1 point
@@ -5505,7 +5505,7 @@
                                         </h2>
                                         {cfg.tiebreakerType === 'closestTo' ? (
                                             totalMatches === 1 ? (() => {
-                                                const list = (cfg.bonusType === 'closestTo' ? closestToQuestions.slice(5, 10) : closestToQuestions.slice(0, 5));
+                                                const list = closestToQuestions.slice(0, 5);
                                                 if (list.length === 0) return <p className="text-red-400 text-sm font-bold">No unused Closest To questions are available for this. Add more to the Closest To tab.</p>;
                                                 return list.map((q, i) => (
                                                     <div key={i} className="mb-3 pb-3 border-b border-gray-700">
