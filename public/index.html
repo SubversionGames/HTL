@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 9, 2026 6:05 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 10, 2026 11:56 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -2501,9 +2501,35 @@
                 }
             };
 
+            // PLAYOFFS: who does this team play next in its bracket? Round 1 is fixed by seed (1v8, 4v5, 2v7, 3v6);
+            // later rounds use whoever has advanced (from the ELIM marks). Returns a team from teamsData, or null if not known yet.
+            const bracketOpponentFor = (team) => {
+                const e = leagueSeeds[team.id];
+                if (!e || !e.bracket || !(e.seed >= 1 && e.seed <= 8)) return null;
+                const bySeed = {};
+                teamsData.forEach(t => {
+                    const x = leagueSeeds[t.id];
+                    if (x && x.bracket === e.bracket && x.seed >= 1 && x.seed <= 8) bySeed[x.seed] = { id: t.id, elim: x.elim || 0 };
+                });
+                const res = resolveBracket(bySeed);
+                for (let r = 0; r < 3; r++) {
+                    const idx = res.cols[r].findIndex(c => c && String(c.id) === String(team.id));
+                    if (idx < 0) continue;
+                    const opp = res.cols[r][idx ^ 1];
+                    if (!opp) return null;
+                    if (!res.cols[r + 1][idx >> 1]) return teamsData.find(t => String(t.id) === String(opp.id)) || null;  // this match isn't decided yet
+                }
+                return null;
+            };
+
             const handleTeamSelection = (team) => {
                 if (!selectedTeam1) {
                     setSelectedTeam1(team);
+                    // Playoffs: fill in the bracket opponent as Team 2 automatically (the host can still press Change on Team 2)
+                    if (seasonType === 'playoff') {
+                        const opp = bracketOpponentFor(team);
+                        if (opp && opp.id !== team.id) setSelectedTeam2(opp);
+                    }
                 } else if (!selectedTeam2 && team.id !== selectedTeam1.id) {
                     setSelectedTeam2(team);
                 }
