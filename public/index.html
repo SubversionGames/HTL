@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 1:12 AM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 10:15 AM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -2747,16 +2747,28 @@
 
             // Wizard: save this match's whole setup (questions + bonus + tiebreaker), optionally lock it, then go to the next match or the recap.
             const saveWizardSlot = (lock) => {
+                // ONE match: attach the tiebreaker question to the match now (never the bonus round's question)
+                let tbBU = null, tbSO = null;
+                if (totalMatches === 1 && !lockedSlots[wizardMatchIdx]) {
+                    if (selectedTiebreakerType === 'bottomsUp') {
+                        const pool = bottomsUpQuestions.filter(q => !(selectedBonusType === 'bottomsUp' && bottomsUpQuestion && q.questionText === bottomsUpQuestion.questionText));
+                        if (pool.length > 0) tbBU = pool[Math.floor(Math.random() * pool.length)];
+                    }
+                    if (selectedTiebreakerType === 'shootout') {
+                        const pool = shootoutQuestions.filter(q => !(selectedBonusType === 'shootout' && selectedShootoutQuestion && q.colIndex === selectedShootoutQuestion.colIndex));
+                        if (pool.length > 0) tbSO = pool[Math.floor(Math.random() * pool.length)];
+                    }
+                } else if (totalMatches === 1) { tbBU = tieBreakerBottomsUpQuestion || null; tbSO = selectedTieBreakerShootoutQuestion || null; }
                 if (dupMatchSlot() >= 0) { alert(`${selectedMatch.name} is already set for Match ${dupMatchSlot() + 1}. Go back and pick a different match.`); return; }
                 const cfg = {
                     match: selectedMatch,
                     bonusType: selectedBonusType,
                     tiebreakerType: selectedTiebreakerType,
                     // Bottoms Up / Shootout questions are chosen when the round starts (from what the series hasn't used yet)
-                    bottomsUpQuestion: null,
-                    tieBreakerBottomsUpQuestion: null,
-                    selectedShootoutQuestion: null,
-                    selectedTieBreakerShootoutQuestion: null
+                    bottomsUpQuestion: (totalMatches === 1 && selectedBonusType === 'bottomsUp') ? (bottomsUpQuestion || null) : null,
+                    tieBreakerBottomsUpQuestion: tbBU,
+                    selectedShootoutQuestion: (totalMatches === 1 && selectedBonusType === 'shootout') ? (selectedShootoutQuestion || null) : null,
+                    selectedTieBreakerShootoutQuestion: tbSO
                 };
                 setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
                 if (lock) setLockedSlots(prev => { const a = prev.slice(); a[wizardMatchIdx] = true; return a; });
@@ -2779,7 +2791,11 @@
                 setSeriesRecorded([]);
                 setClosestToBase(0); setClosestToConsumed(0);   // new series: the shared Closest To list starts from the top
                 seriesStartedRef.current = true;
-                setUsedShootoutColIndices([]); setUsedBottomsUpTexts([]);   // nothing has been played yet in this series
+                {   // questions already attached to a match (single-match series) count as used; multi-match series attach nothing up front
+                    const cf = seriesMatches.slice(0, totalMatches).filter(Boolean);
+                    setUsedShootoutColIndices(cf.flatMap(c => [c.selectedShootoutQuestion, c.selectedTieBreakerShootoutQuestion]).filter(Boolean).map(q => q.colIndex));
+                    setUsedBottomsUpTexts(cf.flatMap(c => [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion]).filter(Boolean).map(q => q.questionText));
+                }
                 setTeamsConfirmed(true);
                 setShowPositionModal(false);
                 setTimeout(() => broadcastGameState(), 100);
@@ -5164,7 +5180,20 @@
                                         </button>
                                         <button
                                             onClick={() => {
-                                                // Bottoms Up / Shootout questions are NOT picked here. They are picked from the unused ones when the round actually starts.
+                                                // ONE match (regular season or a 1-match playoff): the Bottoms Up / Shootout question is attached to the match right now.
+                                                // 2+ matches: nothing is picked here; each round picks from the series' unused questions when it starts.
+                                                if (totalMatches === 1) {
+                                                    if (selectedBonusType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
+                                                        const skip = selectedTiebreakerType === 'bottomsUp' && tieBreakerBottomsUpQuestion ? tieBreakerBottomsUpQuestion.questionText : null;
+                                                        const pool = bottomsUpQuestions.filter(q => q.questionText !== skip);
+                                                        if (pool.length > 0) setBottomsUpQuestion(pool[Math.floor(Math.random() * pool.length)]);
+                                                    }
+                                                    if (selectedBonusType === 'shootout' && shootoutQuestions.length > 0) {
+                                                        const skip = selectedTiebreakerType === 'shootout' && selectedTieBreakerShootoutQuestion ? selectedTieBreakerShootoutQuestion.colIndex : null;
+                                                        const pool = shootoutQuestions.filter(q => q.colIndex !== skip);
+                                                        if (pool.length > 0) setSelectedShootoutQuestion(pool[Math.floor(Math.random() * pool.length)]);
+                                                    }
+                                                }
                                                 setAdminStep(4);
                                             }}
                                             disabled={!selectedBonusType}
@@ -5436,9 +5465,25 @@
                                         </h2>
                                         {cfg.bonusType === 'closestTo' ? (
                                             <p className="text-gray-300 text-sm">Questions are drawn in order from ONE shared Closest To list ({closestToQuestions.length} in the tab) that continues down across every match in the series, so none repeat.</p>
-                                        ) : (
-                                            <p className="text-gray-300 text-sm">The question is picked automatically from the ones this series hasn't used yet, when this round starts.</p>
-                                        )}
+                                        ) : (() => {
+                                            const isBU = cfg.bonusType === 'bottomsUp';
+                                            const q = isBU ? cfg.bottomsUpQuestion : cfg.selectedShootoutQuestion;
+                                            if (!q) return <p className="text-gray-300 text-sm">The question is picked automatically from the ones this series hasn't used yet, when this round starts.</p>;
+                                            return isBU ? (
+                                                <div>
+                                                    <p className="text-white text-sm mb-2">{q.questionText}</p>
+                                                    <p className="text-gray-400 text-sm mb-1">First 5 answers:</p>
+                                                    {q.answers.slice(0, 5).map((a, i) => (<p key={i} className="text-yellow-400 text-sm">• {a.text}</p>))}
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <p className="text-white text-sm mb-2">{q.longQuestion}</p>
+                                                    <p className="text-cyan-400 text-sm mb-2 font-bold">Short: {q.shortQuestion}</p>
+                                                    <p className="text-gray-400 text-sm mb-1">First answers:</p>
+                                                    {q.answers.slice(0, 5).map((a, i) => (<p key={i} className="text-yellow-400 text-sm">• {a}</p>))}
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
 
                                     {/* Tiebreaker */}
@@ -5448,9 +5493,25 @@
                                         </h2>
                                         {cfg.tiebreakerType === 'closestTo' ? (
                                             <p className="text-gray-300 text-sm">Continues down the same shared Closest To list, as many questions as the tiebreaker needs.</p>
-                                        ) : (
-                                            <p className="text-gray-300 text-sm">The question is picked automatically from the ones this series hasn't used yet, only if the tiebreaker is needed.</p>
-                                        )}
+                                        ) : (() => {
+                                            const isBU = cfg.tiebreakerType === 'bottomsUp';
+                                            const q = isBU ? cfg.tieBreakerBottomsUpQuestion : cfg.selectedTieBreakerShootoutQuestion;
+                                            if (!q) return <p className="text-gray-300 text-sm">The question is picked automatically from the ones this series hasn't used yet, only if the tiebreaker is needed.</p>;
+                                            return isBU ? (
+                                                <div>
+                                                    <p className="text-white text-sm mb-2">{q.questionText}</p>
+                                                    <p className="text-gray-400 text-sm mb-1">First 5 answers:</p>
+                                                    {q.answers.slice(0, 5).map((a, i) => (<p key={i} className="text-yellow-400 text-sm">• {a.text}</p>))}
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <p className="text-white text-sm mb-2">{q.longQuestion}</p>
+                                                    <p className="text-cyan-400 text-sm mb-2 font-bold">Short: {q.shortQuestion}</p>
+                                                    <p className="text-gray-400 text-sm mb-1">First answers:</p>
+                                                    {q.answers.slice(0, 5).map((a, i) => (<p key={i} className="text-yellow-400 text-sm">• {a}</p>))}
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                     </div>
                                     ))}
