@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 12:32 AM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 12:58 AM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -1164,6 +1164,7 @@
             const [totalMatches, setTotalMatches] = useState(1);            // how many matches in this session
             const [seriesMatches, setSeriesMatches] = useState([]);         // one saved setup per match (questions, bonus, tiebreaker)
             const [seriesOrder, setSeriesOrder] = useState([]);              // PLAYOFFS: random play order. seriesOrder[g] = which built match is played as game g+1
+            const seriesStartedRef = useRef(false);
             const [lockedSlots, setLockedSlots] = useState([]);              // lockedSlots[i] = true when Match i+1 is locked in (its match can't be used by other slots, its picks are frozen)
             const [wizardMatchIdx, setWizardMatchIdx] = useState(0);        // which match the wizard is currently setting up (0-based)
             const [seriesMatchIndex, setSeriesMatchIndex] = useState(0);    // which match is being played right now (0-based)
@@ -2183,6 +2184,10 @@
                 if (currentRound === 7 || currentRound === 14) {
                     const activeBonusType = currentRound === 7 ? bonusType : tieBreakerType;
                     if (activeBonusType === 'closestTo') {
+                        if (closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length) {
+                            setHostWarning('No unused Closest To questions left in this series. Add more to the Closest To tab, then press Refresh Questions.');
+                            return;
+                        }
                         setTeam1Time(30);
                         setTeam2Time(30);
                         const currentQ = closestToSeries[bonusQuestionIndex];
@@ -2553,6 +2558,8 @@
             const handleConfirmTeams = () => {
                 if (selectedTeam1 && selectedTeam2) {
                     if (seasonType === 'playoff' && !getSeedPair(selectedTeam1, selectedTeam2)) return;
+                    // A series has already been played from this page: start the wizard from a clean slate
+                    if (seriesStartedRef.current) { seriesStartedRef.current = false; setSeriesMatches([]); setLockedSlots([]); setSeriesOrder([]); }
                     setWizardMatchIdx(0);
                     setAdminStep(2);
                 }
@@ -2640,6 +2647,27 @@
                 .filter((c, ci) => c && ci !== wizardMatchIdx && ci < totalMatches)
                 .flatMap(c => [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion])
                 .filter(Boolean).map(q => q.questionText);
+
+            // Questions already taken by the OTHER matches of this series (bonus AND tiebreaker) plus this match's other round.
+            // role = which round of THIS match is being picked ('bonus' | 'tiebreaker').
+            const seriesUsed = (role) => {
+                const bu = [], so = [];
+                seriesMatches.forEach((c, ci) => {
+                    if (!c || ci >= totalMatches || ci === wizardMatchIdx) return;
+                    [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion].forEach(q => q && bu.push(q.questionText));
+                    [c.selectedShootoutQuestion, c.selectedTieBreakerShootoutQuestion].forEach(q => q && so.push(q.colIndex));
+                });
+                if (role === 'bonus') {
+                    if (selectedTiebreakerType === 'bottomsUp' && tieBreakerBottomsUpQuestion) bu.push(tieBreakerBottomsUpQuestion.questionText);
+                    if (selectedTiebreakerType === 'shootout' && selectedTieBreakerShootoutQuestion) so.push(selectedTieBreakerShootoutQuestion.colIndex);
+                } else {
+                    if (selectedBonusType === 'bottomsUp' && bottomsUpQuestion) bu.push(bottomsUpQuestion.questionText);
+                    if (selectedBonusType === 'shootout' && selectedShootoutQuestion) so.push(selectedShootoutQuestion.colIndex);
+                }
+                return { bu, so };
+            };
+            const unusedBottomsUp = (role) => { const u = seriesUsed(role).bu; return bottomsUpQuestions.filter(q => !u.includes(q.questionText)); };
+            const unusedShootout = (role) => { const u = seriesUsed(role).so; return shootoutQuestions.filter(q => !u.includes(q.colIndex)); };
 
             // FAILSAFE: the same main match can never be saved into two slots of a series. Returns the other slot's index, or -1.
             const dupMatchSlot = () => (!selectedMatch ? -1 : seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && c && c.match && c.match.id === selectedMatch.id));
@@ -2743,14 +2771,17 @@
                 let tbBottoms = tieBreakerBottomsUpQuestion;
                 // A locked slot keeps the picks it already has; only unlocked slots draw fresh tiebreaker questions
                 if (!lockedSlots[wizardMatchIdx]) {
-                    if (selectedTiebreakerType === 'shootout' && shootoutQuestions.length > 0) {
-                        tbShootout = pickFresh(shootoutQuestions, q => usedShootoutColIndices.includes(q.colIndex));
+                    if (selectedTiebreakerType === 'shootout') {
+                        const pool = unusedShootout('tiebreaker');
+                        if (pool.length === 0) { alert('No unused Shootout questions are left in this series. Pick a different tiebreaker, or add more questions to the Shootout tab and refresh.'); return; }
+                        tbShootout = pool[Math.floor(Math.random() * pool.length)];
                         setSelectedTieBreakerShootoutQuestion(tbShootout);
                         setUsedShootoutColIndices(prev => [...prev, tbShootout.colIndex]);
                     }
-                    if (selectedTiebreakerType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
-                        const usedTexts = bottomsUpTextsUsedElsewhere();
-                        tbBottoms = pickFresh(bottomsUpQuestions, q => usedTexts.includes(q.questionText) || (selectedBonusType === 'bottomsUp' && bottomsUpQuestion && q.questionText === bottomsUpQuestion.questionText));
+                    if (selectedTiebreakerType === 'bottomsUp') {
+                        const pool = unusedBottomsUp('tiebreaker');
+                        if (pool.length === 0) { alert('No unused Bottoms Up questions are left in this series. Pick a different tiebreaker, or add more questions to the Bottoms Up tab and refresh.'); return; }
+                        tbBottoms = pool[Math.floor(Math.random() * pool.length)];
                         setTieBreakerBottomsUpQuestion(tbBottoms);
                     }
                 }
@@ -2783,6 +2814,8 @@
                 setSeriesWins({});
                 setSeriesRecorded([]);
                 setClosestToBase(0); setClosestToConsumed(0);   // new series: the shared Closest To list starts from the top
+                seriesStartedRef.current = true;
+                setUsedShootoutColIndices(seriesMatches.slice(0, totalMatches).flatMap(c => c ? [c.selectedShootoutQuestion, c.selectedTieBreakerShootoutQuestion] : []).filter(Boolean).map(q => q.colIndex));
                 setTeamsConfirmed(true);
                 setShowPositionModal(false);
                 setTimeout(() => broadcastGameState(), 100);
@@ -3940,7 +3973,10 @@
             useEffect(() => {
                 if (!bottomsUpQuestionMissing) return;
                 if (bottomsUpQuestions.length > 0) {
-                    const pick = bottomsUpQuestions[Math.floor(Math.random() * bottomsUpQuestions.length)];
+                    const usedBU = seriesMatches.slice(0, totalMatches).flatMap(c => c ? [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion] : []).filter(Boolean).map(q => q.questionText);
+                    const freshBU = bottomsUpQuestions.filter(q => !usedBU.includes(q.questionText));
+                    const poolBU = freshBU.length > 0 ? freshBU : bottomsUpQuestions;
+                    const pick = poolBU[Math.floor(Math.random() * poolBU.length)];
                     if (currentRound === 14) setTieBreakerBottomsUpQuestion(pick); else setBottomsUpQuestion(pick);
                     setHostWarning('The Bottoms Up question was missing, so a new one was picked automatically.');
                     return;
@@ -3948,6 +3984,13 @@
                 const retry = setTimeout(() => { if (refreshLiveQuestionsRef.current) refreshLiveQuestionsRef.current(); }, 8000);
                 return () => clearTimeout(retry);
             }, [bottomsUpQuestionMissing, bottomsUpQuestions.length, sheetsRefreshing, sheetsLoading, currentRound]);
+
+            // Closest To: as soon as BOTH teams have submitted, the timers stop
+            useEffect(() => {
+                if (userMode !== 'host') return;
+                const active = currentRound === 7 ? bonusType : currentRound === 14 ? tieBreakerType : null;
+                if (active === 'closestTo' && team1GuessSubmitted && team2GuessSubmitted && timerRunning) setTimerRunning(false);
+            }, [userMode, currentRound, bonusType, tieBreakerType, team1GuessSubmitted, team2GuessSubmitted, timerRunning]);
 
             // Host: red warning banner clears itself after a while
             useEffect(() => {
@@ -5000,12 +5043,18 @@
                                         ) : (
                                             sheetsMatches.map(match => {
                                                 const isSelected = selectedMatch?.id === match.id;
-                                                const usedInSlot = seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && lockedSlots[ci] && c && c.match && c.match.id === match.id);
+                                                const usedInSlot = seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && c && c.match && c.match.id === match.id);
                                                 const thisSlotLocked = !!lockedSlots[wizardMatchIdx];
                                                 return (
                                                     <div
                                                         key={match.id}
-                                                        onClick={() => { if (usedInSlot < 0 && !thisSlotLocked) setSelectedMatch(isSelected ? null : match); }}
+                                                        onClick={() => {
+                                                            if (usedInSlot >= 0 || thisSlotLocked) return;
+                                                            if (isSelected) {   // un-select: also frees this slot's saved match so other slots can use it
+                                                                setSelectedMatch(null);
+                                                                setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); if (a[wizardMatchIdx]) a[wizardMatchIdx] = { ...a[wizardMatchIdx], match: null }; return a; });
+                                                            } else setSelectedMatch(match);
+                                                        }}
                                                         className={`bg-gray-800 rounded-lg p-6 border-4 transition ${(usedInSlot >= 0 || (thisSlotLocked && !isSelected)) ? 'opacity-40 cursor-not-allowed' : (thisSlotLocked ? 'cursor-not-allowed' : 'cursor-pointer hover:scale-105')}`}
                                                         style={{
                                                             borderColor: isSelected ? '#FFD700' : '#7d3ad4',
@@ -5013,7 +5062,7 @@
                                                         }}
                                                     >
                                                         <h3 className="text-2xl font-bold text-white mb-2">{match.name}</h3>
-                                                        {usedInSlot >= 0 && <div className="text-red-400 text-sm">Locked in Match {usedInSlot + 1}</div>}
+                                                        {usedInSlot >= 0 && <div className="text-red-400 text-sm font-bold">Set for Match {usedInSlot + 1}</div>}
                                                         {isSelected && usedInSlot < 0 && dupMatchSlot() >= 0 && <div className="text-red-400 text-sm font-bold">⚠ Already set for Match {dupMatchSlot() + 1}</div>}
                                                         {isSelected && (
                                                             <div className="mt-2 text-yellow-400 font-bold text-center">{thisSlotLocked ? '🔒 LOCKED' : '✓ SELECTED (click again to un-select)'}</div>
@@ -5075,7 +5124,7 @@
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('bottomsUp')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && unusedBottomsUp('bonus').length > 0 && setSelectedBonusType('bottomsUp')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'bottomsUp' ? '#FFD700' : '#7d3ad4',
@@ -5083,7 +5132,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Bottoms Up</h3>
-                                            <p className="text-gray-400 text-center">{bottomsUpQuestions.length} questions available</p>
+                                            <p className={`text-center ${unusedBottomsUp('bonus').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedBottomsUp('bonus').length === 0 ? 'None left in this series' : `${unusedBottomsUp('bonus').length} unused`}</p>
                                             {selectedBonusType === 'bottomsUp' && (
                                                 <div className="mt-4 text-yellow-400 font-bold">✓ SELECTED</div>
                                             )}
@@ -5107,7 +5156,7 @@
 
                                         {/* Shootout Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('shootout')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && unusedShootout('bonus').length > 0 && setSelectedBonusType('shootout')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'shootout' ? '#FFD700' : '#7d3ad4',
@@ -5115,7 +5164,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Shootout</h3>
-                                            <p className="text-gray-400 text-center">{shootoutQuestions.length} questions available</p>
+                                            <p className={`text-center ${unusedShootout('bonus').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedShootout('bonus').length === 0 ? 'None left in this series' : `${unusedShootout('bonus').length} unused`}</p>
                                             {selectedBonusType === 'shootout' && (
                                                 <div className="mt-4 text-yellow-400 font-bold">✓ SELECTED</div>
                                             )}
@@ -5132,12 +5181,15 @@
                                         </button>
                                         <button
                                             onClick={() => {
-                                                if (selectedBonusType === 'bottomsUp' && bottomsUpQuestions.length > 0) {
-                                                    const usedTexts = bottomsUpTextsUsedElsewhere();
-                                                    setBottomsUpQuestion(pickFresh(bottomsUpQuestions, q => usedTexts.includes(q.questionText)));
+                                                if (selectedBonusType === 'bottomsUp') {
+                                                    const pool = unusedBottomsUp('bonus');
+                                                    if (pool.length === 0) { alert('No unused Bottoms Up questions are left in this series. Pick a different bonus, or add more questions to the Bottoms Up tab and refresh.'); return; }
+                                                    setBottomsUpQuestion(pool[Math.floor(Math.random() * pool.length)]);
                                                 }
-                                                if (selectedBonusType === 'shootout' && shootoutQuestions.length > 0) {
-                                                    const pick = pickFresh(shootoutQuestions, q => usedShootoutColIndices.includes(q.colIndex));
+                                                if (selectedBonusType === 'shootout') {
+                                                    const pool = unusedShootout('bonus');
+                                                    if (pool.length === 0) { alert('No unused Shootout questions are left in this series. Pick a different bonus, or add more questions to the Shootout tab and refresh.'); return; }
+                                                    const pick = pool[Math.floor(Math.random() * pool.length)];
                                                     setSelectedShootoutQuestion(pick);
                                                     setUsedShootoutColIndices(prev => [...prev, pick.colIndex]);
                                                 }
@@ -5165,7 +5217,7 @@
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'bottomsUp' && setSelectedTiebreakerType('bottomsUp')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'bottomsUp' && unusedBottomsUp('tiebreaker').length > 0 && setSelectedTiebreakerType('bottomsUp')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'bottomsUp' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5175,7 +5227,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Bottoms Up</h3>
-                                            <p className="text-gray-400 text-center">{bottomsUpQuestions.length} questions available</p>
+                                            <p className={`text-center ${unusedBottomsUp('tiebreaker').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedBottomsUp('tiebreaker').length === 0 ? 'None left in this series' : `${unusedBottomsUp('tiebreaker').length} unused`}</p>
                                             {selectedBonusType === 'bottomsUp' && (
                                                 <p className="text-red-400 text-sm mt-2">Already used for Bonus Round</p>
                                             )}
@@ -5207,7 +5259,7 @@
 
                                         {/* Shootout Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'shootout' && setSelectedTiebreakerType('shootout')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'shootout' && unusedShootout('tiebreaker').length > 0 && setSelectedTiebreakerType('shootout')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'shootout' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5217,7 +5269,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Shootout</h3>
-                                            <p className="text-gray-400 text-center">{shootoutQuestions.length} questions available</p>
+                                            <p className={`text-center ${unusedShootout('tiebreaker').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedShootout('tiebreaker').length === 0 ? 'None left in this series' : `${unusedShootout('tiebreaker').length} unused`}</p>
                                             {selectedBonusType === 'shootout' && (
                                                 <p className="text-red-400 text-sm mt-2">Already used for Bonus Round</p>
                                             )}
@@ -6199,9 +6251,10 @@
                             <div className="absolute" style={{left: 'calc(5% + 50px)', top: '40%', zIndex: 15}}>
                                 <div className="bg-gray-900 rounded-lg p-6 border-4 flex flex-col items-center" style={{borderColor: selectedTeam1.color, width: '250px'}}>
                                     <input
-                                        type="number"
+                                        type="text" inputMode="decimal" autoComplete="off"
                                         value={team1Guess}
-                                        onChange={(e) => setTeam1Guess(e.target.value)}
+                                        onChange={(e) => setTeam1Guess(e.target.value.replace(/[^0-9.,\-]/g, ''))}
+                                        onWheel={(e) => e.target.blur()}
                                         disabled={team1GuessSubmitted}
                                         className="w-full text-center text-4xl font-bold bg-gray-800 text-white rounded p-3 mb-3"
                                         placeholder="?"
@@ -6224,9 +6277,10 @@
                             <div className="absolute" style={{right: 'calc(5% + 50px)', top: '40%', zIndex: 15}}>
                                 <div className="bg-gray-900 rounded-lg p-6 border-4 flex flex-col items-center" style={{borderColor: selectedTeam2.color, width: '250px'}}>
                                     <input
-                                        type="number"
+                                        type="text" inputMode="decimal" autoComplete="off"
                                         value={team2Guess}
-                                        onChange={(e) => setTeam2Guess(e.target.value)}
+                                        onChange={(e) => setTeam2Guess(e.target.value.replace(/[^0-9.,\-]/g, ''))}
+                                        onWheel={(e) => e.target.blur()}
                                         disabled={team2GuessSubmitted}
                                         className="w-full text-center text-4xl font-bold bg-gray-800 text-white rounded p-3 mb-3"
                                         placeholder="?"
@@ -7139,7 +7193,7 @@
                                     )}
                                 </div>
                                 {userMode === 'host' && (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'closestTo' && closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length && (
-                                    <p className="text-red-400 font-bold text-lg text-center" style={{marginTop: '-20px', marginBottom: '12px'}}>⚠ Out of unused Closest To questions - this one repeats. Add more to the tab, then press Refresh Questions.</p>
+                                    <p className="text-red-400 font-bold text-lg text-center" style={{marginTop: '-20px', marginBottom: '12px'}}>⚠ No unused Closest To questions left in this series. Add more to the Closest To tab, then press Refresh Questions.</p>
                                 )}
                                 
                                 <div className="bg-gray-800 rounded-lg flex items-center justify-center p-8 mb-4" style={{
@@ -7431,10 +7485,11 @@
                                             (currentRound === 7 ? bonusType : tieBreakerType) === 'closestTo' ? (
                                                 // Closest To Buttons
                                                 !showQuestion ? (
-                                                    <button onClick={handleRevealQuestion} className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black transition text-xl">
-                                                        REVEAL QUESTION
+                                                    <button onClick={handleRevealQuestion} disabled={closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length}
+                                                        className={`font-bold py-4 px-8 rounded-lg border-4 border-black transition text-xl ${(closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length) ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600 text-white'}`}>
+                                                        {(closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length) ? 'OUT OF CLOSEST TO QUESTIONS' : 'REVEAL QUESTION'}
                                                     </button>
-                                                ) : !showBonusAnswer && !timerRunning && team1Time === 30 && team2Time === 30 ? (
+                                                ) : !showBonusAnswer && !timerRunning && team1Time === 30 && team2Time === 30 && !(team1GuessSubmitted && team2GuessSubmitted) ? (
                                                     <button onClick={handleStartTimer} className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-lg border-4 border-black transition text-xl">
                                                         START TIMER
                                                     </button>
