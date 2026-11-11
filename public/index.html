@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 10, 2026 11:56 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 12:14 AM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -1139,6 +1139,10 @@
             // Google Sheets data
             const [sheetsMatches, setSheetsMatches] = useState([]);
             const [closestToQuestions, setClosestToQuestions] = useState([]);
+            // Closest To is ONE shared, shuffled list used across the whole series. Whenever a Closest To bonus/tiebreaker runs it starts
+            // at closestToBase and goes down the list; closestToConsumed = how many questions have been asked so far this series.
+            const [closestToBase, setClosestToBase] = useState(0);
+            const [closestToConsumed, setClosestToConsumed] = useState(0);
             const [shootoutQuestions, setShootoutQuestions] = useState([]);
             const [selectedShootoutQuestion, setSelectedShootoutQuestion] = useState(null);
             const [selectedTieBreakerShootoutQuestion, setSelectedTieBreakerShootoutQuestion] = useState(null);
@@ -1460,6 +1464,7 @@
                                 setBottomsUpConfirmedAnswer(gameState.bottomsUpConfirmedAnswer ?? null);
                                 if (gameState.tieBreakerBottomsUpQuestion) setTieBreakerBottomsUpQuestion(gameState.tieBreakerBottomsUpQuestion);
                                 if (gameState.closestToQuestions && gameState.closestToQuestions.length > 0) setClosestToQuestions(gameState.closestToQuestions);
+                if (gameState.closestToBase !== undefined) { setClosestToBase(gameState.closestToBase || 0); setClosestToConsumed(gameState.closestToConsumed || 0); }
                                 setIsTieBreaker(gameState.isTieBreaker);
                                 setTieBreakerType(gameState.tieBreakerType);
                                 setShowWinnerScreen(gameState.showWinnerScreen);
@@ -1696,7 +1701,7 @@
                 bottomsUpFlyingScore, bottomsUpShowAnswer, bottomsUpGlowing,
                 bottomsUpConfirmedAnswer, bottomsUpActiveTeam, bottomsUpUsedAnswers, bottomsUpTurnNumber,
                 // Questions themselves: so a live edit pulled in from Google Sheets reaches the Stream right away
-                closestToQuestions, bottomsUpQuestion, tieBreakerBottomsUpQuestion,
+                closestToQuestions, closestToBase, closestToConsumed, bottomsUpQuestion, tieBreakerBottomsUpQuestion,
                 selectedShootoutQuestion, selectedTieBreakerShootoutQuestion,
                 // Multi-match sessions / playoffs
                 seasonType, totalMatches, seriesMatchIndex, seriesOrder, seriesWins, seriesRecorded, playoffNoticeDismissed, teamRecords, bracketKey
@@ -1976,6 +1981,7 @@
                 setSelectedTieBreakerShootoutQuestion(gameState.selectedTieBreakerShootoutQuestion ?? null);
                 setUsedShootoutColIndices(gameState.usedShootoutColIndices || []);
                 if (gameState.closestToQuestions && gameState.closestToQuestions.length > 0) setClosestToQuestions(gameState.closestToQuestions);
+                if (gameState.closestToBase !== undefined) { setClosestToBase(gameState.closestToBase || 0); setClosestToConsumed(gameState.closestToConsumed || 0); }
                 setDoubleDipSecondGuess(gameState.doubleDipSecondGuess || false);
                 setDoubleDipTeam(gameState.doubleDipTeam ?? null);
                 setDoubleDipActive(gameState.doubleDipActive || false);
@@ -2179,7 +2185,8 @@
                     if (activeBonusType === 'closestTo') {
                         setTeam1Time(30);
                         setTeam2Time(30);
-                        const currentQ = (currentRound === 14 && closestToQuestions.length >= 10 ? closestToQuestions.slice(5) : closestToQuestions)[bonusQuestionIndex];
+                        const currentQ = closestToSeries[bonusQuestionIndex];
+                        setClosestToConsumed(c => Math.max(c, closestToBase + bonusQuestionIndex + 1));
                         if (currentQ && selectedMatch) {
                             markQuestionUsed('CLOSEST TO', selectedMatch.name, currentQ.rowIndex);
                         }
@@ -2634,6 +2641,26 @@
                 .flatMap(c => [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion])
                 .filter(Boolean).map(q => q.questionText);
 
+            // Wizard warning when a pick would force a repeated question in this series ('' = fine). Warns only; the host decides.
+            const poolWarning = (type, role) => {
+                if (!type) return '';
+                if (type === 'closestTo') {
+                    let need = 0;
+                    seriesMatches.forEach((c, ci) => { if (!c || ci === wizardMatchIdx || ci >= totalMatches) return; if (c.bonusType === 'closestTo') need += 5; if (c.tiebreakerType === 'closestTo') need += 1; });
+                    if (selectedBonusType === 'closestTo') need += 5;
+                    if (role === 'tiebreaker' && selectedTiebreakerType === 'closestTo') need += 1;
+                    if (need > closestToQuestions.length) return `Not enough Closest To questions: this series needs at least ${need} (5 per Closest To bonus, 1 or more per Closest To tiebreaker) but the tab has ${closestToQuestions.length}. Questions would repeat. Add more rows to the Closest To tab and press Refresh Questions during the series.`;
+                } else if (type === 'bottomsUp') {
+                    const used = bottomsUpTextsUsedElsewhere();
+                    const own = role === 'bonus' ? bottomsUpQuestion : tieBreakerBottomsUpQuestion;
+                    if (!own && bottomsUpQuestions.length > 0 && bottomsUpQuestions.every(q => used.includes(q.questionText))) return 'No unused Bottoms Up questions left in this series. A question would repeat. Add more to the Bottoms Up tab and refresh.';
+                } else if (type === 'shootout') {
+                    const own = role === 'bonus' ? selectedShootoutQuestion : selectedTieBreakerShootoutQuestion;
+                    if (!own && shootoutQuestions.length > 0 && shootoutQuestions.every(q => usedShootoutColIndices.includes(q.colIndex))) return 'No unused Shootout questions left in this series. A question would repeat. Add more to the Shootout tab and refresh.';
+                }
+                return '';
+            };
+
             // Put one match's saved setup (questions + bonus + tiebreaker) into the live game variables.
             const applyMatchCfg = (cfg) => {
                 if (!cfg) return;
@@ -2646,7 +2673,6 @@
                 setTieBreakerBottomsUpQuestion(cfg.tieBreakerBottomsUpQuestion || null);
                 setSelectedShootoutQuestion(cfg.selectedShootoutQuestion || null);
                 setSelectedTieBreakerShootoutQuestion(cfg.selectedTieBreakerShootoutQuestion || null);
-                if (cfg.closestToQuestions && cfg.closestToQuestions.length > 0) setClosestToQuestions(cfg.closestToQuestions);
             };
 
             // Same as above but only fills the wizard pickers (no live game variables), or clears them.
@@ -2731,8 +2757,7 @@
                     bottomsUpQuestion: bottomsUpQuestion || null,
                     tieBreakerBottomsUpQuestion: tbBottoms || null,
                     selectedShootoutQuestion: selectedShootoutQuestion || null,
-                    selectedTieBreakerShootoutQuestion: tbShootout || null,
-                    closestToQuestions: rotateList(closestToQuestions, 10 * wizardMatchIdx)
+                    selectedTieBreakerShootoutQuestion: tbShootout || null
                 };
                 setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
                 if (lock) setLockedSlots(prev => { const a = prev.slice(); a[wizardMatchIdx] = true; return a; });
@@ -2753,6 +2778,7 @@
                 setSeriesMatchIndex(0);
                 setSeriesWins({});
                 setSeriesRecorded([]);
+                setClosestToBase(0); setClosestToConsumed(0);   // new series: the shared Closest To list starts from the top
                 setTeamsConfirmed(true);
                 setShowPositionModal(false);
                 setTimeout(() => broadcastGameState(), 100);
@@ -2767,6 +2793,7 @@
                 if (!cfg) return;
                 setShowPositionModal(false);
                 resetMatchState();
+                setClosestToBase(closestToConsumed);   // continue down the shared Closest To list
                 setSelectedTeam1(t1);
                 setSelectedTeam2(t2);
                 applyMatchCfg(cfg);
@@ -2939,6 +2966,7 @@
                         bottomsUpConfirmedAnswer,
                         tieBreakerBottomsUpQuestion: tieBreakerBottomsUpQuestion ?? null,
                         closestToQuestions: closestToQuestions ?? [],
+                        closestToBase, closestToConsumed,
                         isTieBreaker,
                         tieBreakerType,
                         teamsConfirmed,
@@ -3021,7 +3049,7 @@
                 
                 // Step 3: Calculate and award winner 2 seconds after distances appear
                 setTimeout(() => {
-                    const currentQuestion = (currentRound === 14 && closestToQuestions.length >= 10 ? closestToQuestions.slice(5) : closestToQuestions)[bonusQuestionIndex];
+                    const currentQuestion = closestToSeries[bonusQuestionIndex];
                     const correctAnswer = currentQuestion.answer;
                     const guess1 = parseCleanNumber(team1Guess) || 0;
                     const guess2 = parseCleanNumber(team2Guess) || 0;
@@ -3052,6 +3080,7 @@
             const handleBonusNext = () => {
                 // Check if someone won (first to 3 points)
                 if (bonusScore1 >= 3 || bonusScore2 >= 3) {
+                    setClosestToBase(closestToConsumed);   // the next Closest To (bonus or tiebreaker) continues down the list
                     // Award points to match winner
                     if (currentRound === 14) {
                         // Tie-breaker is only worth 1 point
@@ -3680,10 +3709,16 @@
             // Bonus and tiebreaker data now comes from Google Sheets state variables
             // closestToQuestions is already loaded as state from the Sheets fetch
             // shootoutQuestions is already loaded as state from the Sheets fetch
-            const legacyClosestToQuestions = closestToQuestions;
+            const closestToSeries = (() => {
+                if (!closestToQuestions.length) return [];
+                const b = closestToBase % closestToQuestions.length;
+                const r = closestToQuestions.slice(b).concat(closestToQuestions.slice(0, b));
+                return r.concat(r);
+            })();
+            const legacyClosestToQuestions = closestToSeries;
             const shootoutQuestion = selectedShootoutQuestion || (shootoutQuestions.length > 0 ? shootoutQuestions[0] : null);
             // Tiebreaker uses the NEXT 5 questions (6-10), so it never repeats the bonus round's questions
-            const tieBreakerClosestToQuestions = closestToQuestions.length >= 10 ? closestToQuestions.slice(5) : closestToQuestions;
+            const tieBreakerClosestToQuestions = closestToSeries;
             const tieBreakerShootoutQuestion = selectedTieBreakerShootoutQuestion || (shootoutQuestions.length > 0 ? shootoutQuestions[0] : null);
             // Active Bottoms Up question - uses tiebreaker version for round 14
             const activeBottomsUpQuestion = (currentRound === 14 ? tieBreakerBottomsUpQuestion : bottomsUpQuestion) || bottomsUpQuestion;
@@ -3797,9 +3832,14 @@
                             const byRow = {};
                             fresh.forEach(q => { byRow[q.rowIndex] = q; });
                             const needsUpdate = cur.some(q => { const f = byRow[q.rowIndex]; return f && (f.question !== q.question || !Object.is(f.answer, q.answer)); });
-                            if (needsUpdate) {
-                                setClosestToQuestions(prev => prev.map(q => { const f = byRow[q.rowIndex]; return f ? { ...q, question: f.question, answer: f.answer } : q; }));
-                                changed.push('Closest To question');
+                            // Rows ADDED to the tab since the list was loaded go on the END (shuffled among themselves), so the
+                            // order of questions already asked/queued never changes and nothing already used can come back.
+                            const have = new Set(cur.map(q => q.rowIndex));
+                            const added = fresh.filter(q => !have.has(q.rowIndex)).sort(() => Math.random() - 0.5);
+                            if (needsUpdate || added.length > 0) {
+                                setClosestToQuestions(prev => prev.map(q => { const f = byRow[q.rowIndex]; return f ? { ...q, question: f.question, answer: f.answer } : q; }).concat(added));
+                                if (needsUpdate) changed.push('Closest To question');
+                                if (added.length > 0) changed.push(added.length + ' new Closest To question' + (added.length > 1 ? 's' : ''));
                             }
                         }
                     }
@@ -5020,6 +5060,7 @@
                             {adminStep === 3 && (
                                 <div className="flex flex-col flex-1 min-h-0">
                                     <h1 className="text-5xl font-bold text-white mb-8 text-center">{totalMatches > 1 ? `Match ${wizardMatchIdx + 1} of ${totalMatches} - ` : ''}Bonus Round Selection</h1>
+                                    {poolWarning(selectedBonusType, 'bonus') && <p className="text-red-400 font-bold text-center text-lg mb-4">⚠ {poolWarning(selectedBonusType, 'bonus')}</p>}
 
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
@@ -5109,6 +5150,7 @@
                             {adminStep === 4 && (
                                 <div className="flex flex-col flex-1 min-h-0">
                                     <h1 className="text-5xl font-bold text-white mb-8 text-center">{totalMatches > 1 ? `Match ${wizardMatchIdx + 1} of ${totalMatches} - ` : ''}Tiebreaker Selection</h1>
+                                    {poolWarning(selectedTiebreakerType, 'tiebreaker') && <p className="text-red-400 font-bold text-center text-lg mb-4">⚠ {poolWarning(selectedTiebreakerType, 'tiebreaker')}</p>}
 
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
@@ -5359,12 +5401,7 @@
                                             Bonus Round: {cfg.bonusType === 'closestTo' ? 'Closest To' : cfg.bonusType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
                                         </h2>
                                         {cfg.bonusType === 'closestTo' ? (
-                                            (cfg.closestToQuestions || []).slice(0, 5).map((q, i) => (
-                                                <div key={i} className="mb-3 pb-3 border-b border-gray-700">
-                                                    <p className="text-white text-sm">Q{i + 1}: {renderQuestionText(q.question, true)}</p>
-                                                    <p className="text-yellow-400 text-sm">A: {q.answer}</p>
-                                                </div>
-                                            ))
+                                            <p className="text-gray-300 text-sm">Questions are drawn in order from ONE shared Closest To list ({closestToQuestions.length} in the tab) that continues down across every match in the series, so none repeat.</p>
                                         ) : cfg.bonusType === 'bottomsUp' ? (
                                             (() => {
                                                 const q = cfg.bottomsUpQuestion;
@@ -5401,12 +5438,7 @@
                                             Tiebreaker: {cfg.tiebreakerType === 'closestTo' ? 'Closest To' : cfg.tiebreakerType === 'bottomsUp' ? 'Bottoms Up' : 'Shootout'}
                                         </h2>
                                         {cfg.tiebreakerType === 'closestTo' ? (
-                                            (cfg.closestToQuestions || []).slice(...((cfg.closestToQuestions || []).length >= 10 ? [5, 10] : [0, 5])).map((q, i) => (
-                                                <div key={i} className="mb-3 pb-3 border-b border-gray-700">
-                                                    <p className="text-white text-sm">Q{i + 1}: {renderQuestionText(q.question, true)}</p>
-                                                    <p className="text-yellow-400 text-sm">A: {q.answer}</p>
-                                                </div>
-                                            ))
+                                            <p className="text-gray-300 text-sm">Continues down the same shared Closest To list, as many questions as the tiebreaker needs.</p>
                                         ) : cfg.tiebreakerType === 'bottomsUp' ? (
                                             (() => {
                                                 const q = cfg.tieBreakerBottomsUpQuestion || cfg.bottomsUpQuestion;
@@ -7096,6 +7128,9 @@
                                         `QUESTION ${currentQuestion}`
                                     )}
                                 </div>
+                                {userMode === 'host' && (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'closestTo' && closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length && (
+                                    <p className="text-red-400 font-bold text-lg text-center" style={{marginTop: '-20px', marginBottom: '12px'}}>⚠ Out of unused Closest To questions - this one repeats. Add more to the tab, then press Refresh Questions.</p>
+                                )}
                                 
                                 <div className="bg-gray-800 rounded-lg flex items-center justify-center p-8 mb-4" style={{
                                     height: (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'shootout' ? '100%' : (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'bottomsUp' ? '380px' : '380px',
