@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 12:58 AM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 1:12 AM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -1150,7 +1150,8 @@
             // match - initial bonus round pick, initial tiebreaker pick, and any
             // mid-match "board exhausted, start a new one" swaps - so a swap never
             // repeats a question the teams have already seen and answered.
-            const [usedShootoutColIndices, setUsedShootoutColIndices] = useState([]);
+            const [usedShootoutColIndices, setUsedShootoutColIndices] = useState([]);   // Shootout boards already played this series (bonus, tiebreaker AND second boards)
+            const [usedBottomsUpTexts, setUsedBottomsUpTexts] = useState([]);           // Bottoms Up questions already played this series
             // True right after the current Shootout board runs out of fairly-giveable
             // answers, until the host clicks the button to actually move to a new
             // question. While true, the finished board and scores stay on screen
@@ -1451,6 +1452,7 @@
                                 if (gameState.selectedShootoutQuestion) setSelectedShootoutQuestion(gameState.selectedShootoutQuestion);
                                 if (gameState.selectedTieBreakerShootoutQuestion) setSelectedTieBreakerShootoutQuestion(gameState.selectedTieBreakerShootoutQuestion);
                                 if (gameState.usedShootoutColIndices) setUsedShootoutColIndices(gameState.usedShootoutColIndices);
+                                if (gameState.usedBottomsUpTexts) setUsedBottomsUpTexts(gameState.usedBottomsUpTexts);
                                 setShootoutSecondBoardPending(gameState.shootoutSecondBoardPending || false);
                                 if (gameState.bottomsUpQuestion) setBottomsUpQuestion(gameState.bottomsUpQuestion);
                                 if (gameState.bottomsUpTurnNumber !== undefined) setBottomsUpTurnNumber(gameState.bottomsUpTurnNumber);
@@ -1981,6 +1983,7 @@
                 setSelectedShootoutQuestion(gameState.selectedShootoutQuestion ?? null);
                 setSelectedTieBreakerShootoutQuestion(gameState.selectedTieBreakerShootoutQuestion ?? null);
                 setUsedShootoutColIndices(gameState.usedShootoutColIndices || []);
+                setUsedBottomsUpTexts(gameState.usedBottomsUpTexts || []);
                 if (gameState.closestToQuestions && gameState.closestToQuestions.length > 0) setClosestToQuestions(gameState.closestToQuestions);
                 if (gameState.closestToBase !== undefined) { setClosestToBase(gameState.closestToBase || 0); setClosestToConsumed(gameState.closestToConsumed || 0); }
                 setDoubleDipSecondGuess(gameState.doubleDipSecondGuess || false);
@@ -2183,6 +2186,11 @@
                 
                 if (currentRound === 7 || currentRound === 14) {
                     const activeBonusType = currentRound === 7 ? bonusType : tieBreakerType;
+                    if ((activeBonusType === 'bottomsUp' && !(currentRound === 14 ? tieBreakerBottomsUpQuestion : bottomsUpQuestion)) ||
+                        (activeBonusType === 'shootout' && !(currentRound === 14 ? selectedTieBreakerShootoutQuestion : selectedShootoutQuestion))) {
+                        setHostWarning('This round has no unused question yet. Add a new one to the tab, then press Refresh Questions.');
+                        return;
+                    }
                     if (activeBonusType === 'closestTo') {
                         if (closestToQuestions.length > 0 && (closestToBase + bonusQuestionIndex) >= closestToQuestions.length) {
                             setHostWarning('No unused Closest To questions left in this series. Add more to the Closest To tab, then press Refresh Questions.');
@@ -2648,47 +2656,20 @@
                 .flatMap(c => [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion])
                 .filter(Boolean).map(q => q.questionText);
 
-            // Questions already taken by the OTHER matches of this series (bonus AND tiebreaker) plus this match's other round.
-            // role = which round of THIS match is being picked ('bonus' | 'tiebreaker').
-            const seriesUsed = (role) => {
-                const bu = [], so = [];
-                seriesMatches.forEach((c, ci) => {
-                    if (!c || ci >= totalMatches || ci === wizardMatchIdx) return;
-                    [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion].forEach(q => q && bu.push(q.questionText));
-                    [c.selectedShootoutQuestion, c.selectedTieBreakerShootoutQuestion].forEach(q => q && so.push(q.colIndex));
-                });
-                if (role === 'bonus') {
-                    if (selectedTiebreakerType === 'bottomsUp' && tieBreakerBottomsUpQuestion) bu.push(tieBreakerBottomsUpQuestion.questionText);
-                    if (selectedTiebreakerType === 'shootout' && selectedTieBreakerShootoutQuestion) so.push(selectedTieBreakerShootoutQuestion.colIndex);
-                } else {
-                    if (selectedBonusType === 'bottomsUp' && bottomsUpQuestion) bu.push(bottomsUpQuestion.questionText);
-                    if (selectedBonusType === 'shootout' && selectedShootoutQuestion) so.push(selectedShootoutQuestion.colIndex);
-                }
-                return { bu, so };
-            };
-            const unusedBottomsUp = (role) => { const u = seriesUsed(role).bu; return bottomsUpQuestions.filter(q => !u.includes(q.questionText)); };
-            const unusedShootout = (role) => { const u = seriesUsed(role).so; return shootoutQuestions.filter(q => !u.includes(q.colIndex)); };
-
             // FAILSAFE: the same main match can never be saved into two slots of a series. Returns the other slot's index, or -1.
             const dupMatchSlot = () => (!selectedMatch ? -1 : seriesMatches.findIndex((c, ci) => ci !== wizardMatchIdx && ci < totalMatches && c && c.match && c.match.id === selectedMatch.id));
 
-            // Wizard warning when a pick would force a repeated question in this series ('' = fine). Warns only; the host decides.
+            // Wizard heads-up when this series COULD need more questions of a style than its tab holds ('' = fine). Warns only; any style can always be picked.
             const poolWarning = (type, role) => {
                 if (!type) return '';
-                if (type === 'closestTo') {
-                    let need = 0;
-                    seriesMatches.forEach((c, ci) => { if (!c || ci === wizardMatchIdx || ci >= totalMatches) return; if (c.bonusType === 'closestTo') need += 5; if (c.tiebreakerType === 'closestTo') need += 1; });
-                    if (selectedBonusType === 'closestTo') need += 5;
-                    if (role === 'tiebreaker' && selectedTiebreakerType === 'closestTo') need += 1;
-                    if (need > closestToQuestions.length) return `Not enough Closest To questions: this series needs at least ${need} (5 per Closest To bonus, 1 or more per Closest To tiebreaker) but the tab has ${closestToQuestions.length}. Questions would repeat. Add more rows to the Closest To tab and press Refresh Questions during the series.`;
-                } else if (type === 'bottomsUp') {
-                    const used = bottomsUpTextsUsedElsewhere();
-                    const own = role === 'bonus' ? bottomsUpQuestion : tieBreakerBottomsUpQuestion;
-                    if (!own && bottomsUpQuestions.length > 0 && bottomsUpQuestions.every(q => used.includes(q.questionText))) return 'No unused Bottoms Up questions left in this series. A question would repeat. Add more to the Bottoms Up tab and refresh.';
-                } else if (type === 'shootout') {
-                    const own = role === 'bonus' ? selectedShootoutQuestion : selectedTieBreakerShootoutQuestion;
-                    if (!own && shootoutQuestions.length > 0 && shootoutQuestions.every(q => usedShootoutColIndices.includes(q.colIndex))) return 'No unused Shootout questions left in this series. A question would repeat. Add more to the Shootout tab and refresh.';
-                }
+                const per = type === 'closestTo' ? 5 : 1;
+                let need = 0;
+                seriesMatches.forEach((c, ci) => { if (!c || ci === wizardMatchIdx || ci >= totalMatches) return; if (c.bonusType === type) need += per; if (c.tiebreakerType === type) need += 1; });
+                if (selectedBonusType === type) need += per;
+                if (role === 'tiebreaker' && selectedTiebreakerType === type) need += 1;
+                const have = type === 'closestTo' ? closestToQuestions.length : type === 'bottomsUp' ? bottomsUpQuestions.length : shootoutQuestions.length;
+                const name = type === 'closestTo' ? 'Closest To' : type === 'bottomsUp' ? 'Bottoms Up' : 'Shootout';
+                if (need > have) return `Heads up: this series could need ${need} ${name} question${need > 1 ? 's' : ''} (tiebreakers only if they happen) but the ${name} tab has ${have}. If it runs out, the match stops until you add a new question to the ${name} tab and press Refresh Questions.`;
                 return '';
             };
 
@@ -2767,32 +2748,15 @@
             // Wizard: save this match's whole setup (questions + bonus + tiebreaker), optionally lock it, then go to the next match or the recap.
             const saveWizardSlot = (lock) => {
                 if (dupMatchSlot() >= 0) { alert(`${selectedMatch.name} is already set for Match ${dupMatchSlot() + 1}. Go back and pick a different match.`); return; }
-                let tbShootout = selectedTieBreakerShootoutQuestion;
-                let tbBottoms = tieBreakerBottomsUpQuestion;
-                // A locked slot keeps the picks it already has; only unlocked slots draw fresh tiebreaker questions
-                if (!lockedSlots[wizardMatchIdx]) {
-                    if (selectedTiebreakerType === 'shootout') {
-                        const pool = unusedShootout('tiebreaker');
-                        if (pool.length === 0) { alert('No unused Shootout questions are left in this series. Pick a different tiebreaker, or add more questions to the Shootout tab and refresh.'); return; }
-                        tbShootout = pool[Math.floor(Math.random() * pool.length)];
-                        setSelectedTieBreakerShootoutQuestion(tbShootout);
-                        setUsedShootoutColIndices(prev => [...prev, tbShootout.colIndex]);
-                    }
-                    if (selectedTiebreakerType === 'bottomsUp') {
-                        const pool = unusedBottomsUp('tiebreaker');
-                        if (pool.length === 0) { alert('No unused Bottoms Up questions are left in this series. Pick a different tiebreaker, or add more questions to the Bottoms Up tab and refresh.'); return; }
-                        tbBottoms = pool[Math.floor(Math.random() * pool.length)];
-                        setTieBreakerBottomsUpQuestion(tbBottoms);
-                    }
-                }
                 const cfg = {
                     match: selectedMatch,
                     bonusType: selectedBonusType,
                     tiebreakerType: selectedTiebreakerType,
-                    bottomsUpQuestion: bottomsUpQuestion || null,
-                    tieBreakerBottomsUpQuestion: tbBottoms || null,
-                    selectedShootoutQuestion: selectedShootoutQuestion || null,
-                    selectedTieBreakerShootoutQuestion: tbShootout || null
+                    // Bottoms Up / Shootout questions are chosen when the round starts (from what the series hasn't used yet)
+                    bottomsUpQuestion: null,
+                    tieBreakerBottomsUpQuestion: null,
+                    selectedShootoutQuestion: null,
+                    selectedTieBreakerShootoutQuestion: null
                 };
                 setSeriesMatches(prev => { const a = prev.slice(0, totalMatches); a[wizardMatchIdx] = cfg; return a; });
                 if (lock) setLockedSlots(prev => { const a = prev.slice(); a[wizardMatchIdx] = true; return a; });
@@ -2815,7 +2779,7 @@
                 setSeriesRecorded([]);
                 setClosestToBase(0); setClosestToConsumed(0);   // new series: the shared Closest To list starts from the top
                 seriesStartedRef.current = true;
-                setUsedShootoutColIndices(seriesMatches.slice(0, totalMatches).flatMap(c => c ? [c.selectedShootoutQuestion, c.selectedTieBreakerShootoutQuestion] : []).filter(Boolean).map(q => q.colIndex));
+                setUsedShootoutColIndices([]); setUsedBottomsUpTexts([]);   // nothing has been played yet in this series
                 setTeamsConfirmed(true);
                 setShowPositionModal(false);
                 setTimeout(() => broadcastGameState(), 100);
@@ -2989,6 +2953,7 @@
                         selectedShootoutQuestion: selectedShootoutQuestion ?? null,
                         selectedTieBreakerShootoutQuestion: selectedTieBreakerShootoutQuestion ?? null,
                         usedShootoutColIndices,
+                        usedBottomsUpTexts,
                         shootoutSecondBoardPending,
                         bottomsUpQuestion: bottomsUpQuestion ?? null,
                         bottomsUpTurnNumber,
@@ -3539,8 +3504,8 @@
             const handleAdvanceToSecondShootout = () => {
                 const availableQuestions = shootoutQuestions.filter(q => !usedShootoutColIndices.includes(q.colIndex));
                 if (availableQuestions.length === 0) {
-                    console.warn('No unused Shootout questions remain - continuing with the current board.');
-                    setShootoutSecondBoardPending(false);
+                    // Never replay a board: stay here until a new question is added to the Shootout tab and the sheet is refreshed
+                    setHostWarning('No unused Shootout question left in this series. Add a new one to the Shootout tab, press Refresh Questions, then click again.');
                     return;
                 }
                 const newQuestion = availableQuestions[Math.floor(Math.random() * availableQuestions.length)];
@@ -3755,12 +3720,13 @@
                 return r.concat(r);
             })();
             const legacyClosestToQuestions = closestToSeries;
-            const shootoutQuestion = selectedShootoutQuestion || (shootoutQuestions.length > 0 ? shootoutQuestions[0] : null);
+            // Bottoms Up / Shootout questions are assigned when the round starts (never a default 'first one' and never the bonus's question again)
+            const shootoutQuestion = selectedShootoutQuestion || null;
             // Tiebreaker uses the NEXT 5 questions (6-10), so it never repeats the bonus round's questions
             const tieBreakerClosestToQuestions = closestToSeries;
-            const tieBreakerShootoutQuestion = selectedTieBreakerShootoutQuestion || (shootoutQuestions.length > 0 ? shootoutQuestions[0] : null);
+            const tieBreakerShootoutQuestion = selectedTieBreakerShootoutQuestion || null;
             // Active Bottoms Up question - uses tiebreaker version for round 14
-            const activeBottomsUpQuestion = (currentRound === 14 ? tieBreakerBottomsUpQuestion : bottomsUpQuestion) || bottomsUpQuestion;
+            const activeBottomsUpQuestion = currentRound === 14 ? tieBreakerBottomsUpQuestion : bottomsUpQuestion;
 
             // Same idea as Shootout's shootoutBoxExpanded: once the question is revealed, the whole
             // Question Display Area box grows a bit taller (animated, same as Shootout does) so the
@@ -3783,6 +3749,9 @@
             // ═══════════════════════════════════════════════════════════════════════════
             const isBottomsUpRound = (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'bottomsUp';
             const bottomsUpQuestionMissing = userMode === 'host' && gameStarted && isBottomsUpRound && !activeBottomsUpQuestion;
+            const isShootoutRound = (currentRound === 7 || currentRound === 14) && (currentRound === 7 ? bonusType : tieBreakerType) === 'shootout';
+            const shootoutQuestionMissing = userMode === 'host' && gameStarted && isShootoutRound && !(currentRound === 14 ? tieBreakerShootoutQuestion : shootoutQuestion);
+            const roundQuestionMissing = bottomsUpQuestionMissing || shootoutQuestionMissing;
 
             // Always-current copies of values that timers and network calls (which started a moment
             // ago) need - otherwise they'd be looking at old values from when they started.
@@ -3967,23 +3936,37 @@
                 return () => clearInterval(interval);
             }, [userMode, gameStarted]);
 
-            // Host: if the Bottoms Up question is missing, fix it instead of leaving the round dead.
-            // - questions available -> pick one right away
-            // - nothing loaded (e.g. internet dropped while loading) -> keep retrying Google Sheets
+            // Host: when a Bottoms Up or Shootout round starts, pick its question from the ones this series has NOT used yet
+            // (bonus, tiebreaker and Shootout second boards all count as used). If nothing unused is left the round is blocked
+            // (red banner, REVEAL QUESTION refuses) and the sheet is re-checked every 8 seconds until a new question is added.
             useEffect(() => {
-                if (!bottomsUpQuestionMissing) return;
-                if (bottomsUpQuestions.length > 0) {
-                    const usedBU = seriesMatches.slice(0, totalMatches).flatMap(c => c ? [c.bottomsUpQuestion, c.tieBreakerBottomsUpQuestion] : []).filter(Boolean).map(q => q.questionText);
-                    const freshBU = bottomsUpQuestions.filter(q => !usedBU.includes(q.questionText));
-                    const poolBU = freshBU.length > 0 ? freshBU : bottomsUpQuestions;
-                    const pick = poolBU[Math.floor(Math.random() * poolBU.length)];
-                    if (currentRound === 14) setTieBreakerBottomsUpQuestion(pick); else setBottomsUpQuestion(pick);
-                    setHostWarning('The Bottoms Up question was missing, so a new one was picked automatically.');
-                    return;
-                }
+                if (userMode !== 'host' || !gameStarted) return;
+                if (currentRound !== 7 && currentRound !== 14) return;
+                const type = currentRound === 7 ? bonusType : tieBreakerType;
+                if (type === 'bottomsUp') {
+                    const have = currentRound === 14 ? tieBreakerBottomsUpQuestion : bottomsUpQuestion;
+                    if (have) { if (!usedBottomsUpTexts.includes(have.questionText)) setUsedBottomsUpTexts(prev => [...prev, have.questionText]); return; }
+                    const pool = bottomsUpQuestions.filter(q => !usedBottomsUpTexts.includes(q.questionText));
+                    if (pool.length > 0) {
+                        const pick = pool[Math.floor(Math.random() * pool.length)];
+                        if (currentRound === 14) setTieBreakerBottomsUpQuestion(pick); else setBottomsUpQuestion(pick);
+                        setUsedBottomsUpTexts(prev => [...prev, pick.questionText]);
+                        return;
+                    }
+                } else if (type === 'shootout') {
+                    const have = currentRound === 14 ? selectedTieBreakerShootoutQuestion : selectedShootoutQuestion;
+                    if (have) { if (!usedShootoutColIndices.includes(have.colIndex)) setUsedShootoutColIndices(prev => [...prev, have.colIndex]); return; }
+                    const pool = shootoutQuestions.filter(q => !usedShootoutColIndices.includes(q.colIndex));
+                    if (pool.length > 0) {
+                        const pick = pool[Math.floor(Math.random() * pool.length)];
+                        if (currentRound === 14) setSelectedTieBreakerShootoutQuestion(pick); else setSelectedShootoutQuestion(pick);
+                        setUsedShootoutColIndices(prev => [...prev, pick.colIndex]);
+                        return;
+                    }
+                } else return;
                 const retry = setTimeout(() => { if (refreshLiveQuestionsRef.current) refreshLiveQuestionsRef.current(); }, 8000);
                 return () => clearTimeout(retry);
-            }, [bottomsUpQuestionMissing, bottomsUpQuestions.length, sheetsRefreshing, sheetsLoading, currentRound]);
+            }, [userMode, gameStarted, currentRound, bonusType, tieBreakerType, bottomsUpQuestion, tieBreakerBottomsUpQuestion, selectedShootoutQuestion, selectedTieBreakerShootoutQuestion, bottomsUpQuestions, shootoutQuestions, usedBottomsUpTexts, usedShootoutColIndices, sheetsRefreshing]);
 
             // Closest To: as soon as BOTH teams have submitted, the timers stop
             useEffect(() => {
@@ -5124,7 +5107,7 @@
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && unusedBottomsUp('bonus').length > 0 && setSelectedBonusType('bottomsUp')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('bottomsUp')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'bottomsUp' ? '#FFD700' : '#7d3ad4',
@@ -5132,7 +5115,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Bottoms Up</h3>
-                                            <p className={`text-center ${unusedBottomsUp('bonus').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedBottomsUp('bonus').length === 0 ? 'None left in this series' : `${unusedBottomsUp('bonus').length} unused`}</p>
+                                            <p className="text-gray-400 text-center">{bottomsUpQuestions.length} questions available</p>
                                             {selectedBonusType === 'bottomsUp' && (
                                                 <div className="mt-4 text-yellow-400 font-bold">✓ SELECTED</div>
                                             )}
@@ -5156,7 +5139,7 @@
 
                                         {/* Shootout Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && unusedShootout('bonus').length > 0 && setSelectedBonusType('shootout')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && setSelectedBonusType('shootout')}
                                             className="bg-gray-800 rounded-lg p-8 border-4 cursor-pointer hover:scale-105 transition flex flex-col items-center"
                                             style={{
                                                 borderColor: selectedBonusType === 'shootout' ? '#FFD700' : '#7d3ad4',
@@ -5164,7 +5147,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Shootout</h3>
-                                            <p className={`text-center ${unusedShootout('bonus').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedShootout('bonus').length === 0 ? 'None left in this series' : `${unusedShootout('bonus').length} unused`}</p>
+                                            <p className="text-gray-400 text-center">{shootoutQuestions.length} questions available</p>
                                             {selectedBonusType === 'shootout' && (
                                                 <div className="mt-4 text-yellow-400 font-bold">✓ SELECTED</div>
                                             )}
@@ -5181,18 +5164,7 @@
                                         </button>
                                         <button
                                             onClick={() => {
-                                                if (selectedBonusType === 'bottomsUp') {
-                                                    const pool = unusedBottomsUp('bonus');
-                                                    if (pool.length === 0) { alert('No unused Bottoms Up questions are left in this series. Pick a different bonus, or add more questions to the Bottoms Up tab and refresh.'); return; }
-                                                    setBottomsUpQuestion(pool[Math.floor(Math.random() * pool.length)]);
-                                                }
-                                                if (selectedBonusType === 'shootout') {
-                                                    const pool = unusedShootout('bonus');
-                                                    if (pool.length === 0) { alert('No unused Shootout questions are left in this series. Pick a different bonus, or add more questions to the Shootout tab and refresh.'); return; }
-                                                    const pick = pool[Math.floor(Math.random() * pool.length)];
-                                                    setSelectedShootoutQuestion(pick);
-                                                    setUsedShootoutColIndices(prev => [...prev, pick.colIndex]);
-                                                }
+                                                // Bottoms Up / Shootout questions are NOT picked here. They are picked from the unused ones when the round actually starts.
                                                 setAdminStep(4);
                                             }}
                                             disabled={!selectedBonusType}
@@ -5217,7 +5189,7 @@
                                     <div className="flex gap-6 flex-1 justify-center items-center">
                                         {/* Bottoms Up Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'bottomsUp' && unusedBottomsUp('tiebreaker').length > 0 && setSelectedTiebreakerType('bottomsUp')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'bottomsUp' && setSelectedTiebreakerType('bottomsUp')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'bottomsUp' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5227,7 +5199,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Bottoms Up</h3>
-                                            <p className={`text-center ${unusedBottomsUp('tiebreaker').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedBottomsUp('tiebreaker').length === 0 ? 'None left in this series' : `${unusedBottomsUp('tiebreaker').length} unused`}</p>
+                                            <p className="text-gray-400 text-center">{bottomsUpQuestions.length} questions available</p>
                                             {selectedBonusType === 'bottomsUp' && (
                                                 <p className="text-red-400 text-sm mt-2">Already used for Bonus Round</p>
                                             )}
@@ -5259,7 +5231,7 @@
 
                                         {/* Shootout Card */}
                                         <div
-                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'shootout' && unusedShootout('tiebreaker').length > 0 && setSelectedTiebreakerType('shootout')}
+                                            onClick={() => !lockedSlots[wizardMatchIdx] && selectedBonusType !== 'shootout' && setSelectedTiebreakerType('shootout')}
                                             className={`bg-gray-800 rounded-lg p-8 border-4 flex flex-col items-center ${
                                                 selectedBonusType === 'shootout' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:scale-105 transition'
                                             }`}
@@ -5269,7 +5241,7 @@
                                             }}
                                         >
                                             <h3 className="text-3xl font-bold text-white mb-4">Shootout</h3>
-                                            <p className={`text-center ${unusedShootout('tiebreaker').length === 0 ? 'text-red-400 font-bold' : 'text-gray-400'}`}>{unusedShootout('tiebreaker').length === 0 ? 'None left in this series' : `${unusedShootout('tiebreaker').length} unused`}</p>
+                                            <p className="text-gray-400 text-center">{shootoutQuestions.length} questions available</p>
                                             {selectedBonusType === 'shootout' && (
                                                 <p className="text-red-400 text-sm mt-2">Already used for Bonus Round</p>
                                             )}
@@ -5464,33 +5436,8 @@
                                         </h2>
                                         {cfg.bonusType === 'closestTo' ? (
                                             <p className="text-gray-300 text-sm">Questions are drawn in order from ONE shared Closest To list ({closestToQuestions.length} in the tab) that continues down across every match in the series, so none repeat.</p>
-                                        ) : cfg.bonusType === 'bottomsUp' ? (
-                                            (() => {
-                                                const q = cfg.bottomsUpQuestion;
-                                                return q ? (
-                                                    <div>
-                                                        <p className="text-white text-sm mb-2">{q.questionText}</p>
-                                                        <p className="text-gray-400 text-sm mb-1">First 5 answers:</p>
-                                                        {q.answers.slice(0, 5).map((a, i) => (
-                                                            <p key={i} className="text-yellow-400 text-sm">• {a.text}</p>
-                                                        ))}
-                                                    </div>
-                                                ) : <p className="text-gray-400">No Bottoms Up question found.</p>;
-                                            })()
                                         ) : (
-                                            (() => {
-                                                const q = cfg.selectedShootoutQuestion || shootoutQuestions[0];
-                                                return q ? (
-                                                    <div>
-                                                        <p className="text-white text-sm mb-2">{q.longQuestion}</p>
-                                                        <p className="text-cyan-400 text-sm mb-2 font-bold">Short: {q.shortQuestion}</p>
-                                                        <p className="text-gray-400 text-sm mb-1">First answers:</p>
-                                                        {q.answers.slice(0, 5).map((a, i) => (
-                                                            <p key={i} className="text-yellow-400 text-sm">• {a}</p>
-                                                        ))}
-                                                    </div>
-                                                ) : <p className="text-gray-400">No shootout question found.</p>;
-                                            })()
+                                            <p className="text-gray-300 text-sm">The question is picked automatically from the ones this series hasn't used yet, when this round starts.</p>
                                         )}
                                     </div>
 
@@ -5501,33 +5448,8 @@
                                         </h2>
                                         {cfg.tiebreakerType === 'closestTo' ? (
                                             <p className="text-gray-300 text-sm">Continues down the same shared Closest To list, as many questions as the tiebreaker needs.</p>
-                                        ) : cfg.tiebreakerType === 'bottomsUp' ? (
-                                            (() => {
-                                                const q = cfg.tieBreakerBottomsUpQuestion || cfg.bottomsUpQuestion;
-                                                return q ? (
-                                                    <div>
-                                                        <p className="text-white text-sm mb-2">{q.questionText}</p>
-                                                        <p className="text-gray-400 text-sm mb-1">First 5 answers:</p>
-                                                        {q.answers.slice(0, 5).map((a, i) => (
-                                                            <p key={i} className="text-yellow-400 text-sm">• {a.text}</p>
-                                                        ))}
-                                                    </div>
-                                                ) : <p className="text-gray-400">No Bottoms Up question found.</p>;
-                                            })()
                                         ) : (
-                                            (() => {
-                                                const q = cfg.selectedTieBreakerShootoutQuestion || shootoutQuestions[0];
-                                                return q ? (
-                                                    <div>
-                                                        <p className="text-white text-sm mb-2">{q.longQuestion}</p>
-                                                        <p className="text-cyan-400 text-sm mb-2 font-bold">Short: {q.shortQuestion}</p>
-                                                        <p className="text-gray-400 text-sm mb-1">First answers:</p>
-                                                        {q.answers.slice(0, 5).map((a, i) => (
-                                                            <p key={i} className="text-yellow-400 text-sm">• {a}</p>
-                                                        ))}
-                                                    </div>
-                                                ) : <p className="text-gray-400">No shootout question found.</p>;
-                                            })()
+                                            <p className="text-gray-300 text-sm">The question is picked automatically from the ones this series hasn't used yet, only if the tiebreaker is needed.</p>
                                         )}
                                     </div>
                                     </div>
@@ -6461,14 +6383,16 @@
                     )}
 
                     {/* HOST ONLY: red warning banner (missing question, auto-recovery notices, etc.) */}
-                    {userMode === 'host' && gameStarted && (bottomsUpQuestionMissing || hostWarning) && (
+                    {userMode === 'host' && gameStarted && (roundQuestionMissing || hostWarning) && (
                         <div className="absolute font-bold text-white text-center" style={{
                             top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 80,
                             backgroundColor: '#b91c1c', border: '4px solid black', borderRadius: '16px',
                             padding: '16px 32px', fontSize: '30px', maxWidth: '2200px'
                         }}>
-                            {bottomsUpQuestionMissing
-                                ? '⚠ The Bottoms Up question is not loaded - reloading it from Google Sheets...'
+                            {roundQuestionMissing
+                                ? (bottomsUpQuestionMissing
+                                    ? (bottomsUpQuestions.length === 0 ? '⚠ The Bottoms Up questions are not loaded - reloading from Google Sheets...' : '⚠ No unused Bottoms Up question left in this series. The round is paused: add a new one to the Bottoms Up tab, then press Refresh Questions.')
+                                    : (shootoutQuestions.length === 0 ? '⚠ The Shootout questions are not loaded - reloading from Google Sheets...' : '⚠ No unused Shootout question left in this series. The round is paused: add a new one to the Shootout tab, then press Refresh Questions.'))
                                 : hostWarning}
                         </div>
                     )}
