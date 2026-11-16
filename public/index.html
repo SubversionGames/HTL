@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 11, 2026 10:54 AM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 15, 2026 7:15 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -1431,6 +1431,9 @@
                                 setPowerupTimer(gameState.powerupTimer);
                                 setTeam1Powerups(gameState.team1Powerups);
                                 setTeam2Powerups(gameState.team2Powerups);
+                                setTeam1DoublerActive(!!gameState.team1DoublerActive); setTeam2DoublerActive(!!gameState.team2DoublerActive);
+                                setTeam1ExtraTimeActive(!!gameState.team1ExtraTimeActive); setTeam2ExtraTimeActive(!!gameState.team2ExtraTimeActive);
+                                setTeam1DoubleDipUsed(!!gameState.team1DoubleDipUsed); setTeam2DoubleDipUsed(!!gameState.team2DoubleDipUsed);
                                 setBonusScore1(gameState.bonusScore1);
                                 setBonusScore2(gameState.bonusScore2);
                                 setBonusQuestionIndex(gameState.bonusQuestionIndex);
@@ -1693,6 +1696,7 @@
                 team1Time, team2Time, timerRunning, powerupPhase,
                 powerupTimer,
                 team1Powerups, team2Powerups, bonusScore1, bonusScore2,
+                team1DoublerActive, team2DoublerActive, team1ExtraTimeActive, team2ExtraTimeActive, team1DoubleDipUsed, team2DoubleDipUsed,
                 bonusQuestionIndex, showBonusAnswer, showDistances, team1Guess, team2Guess,
                 team1GuessSubmitted, team2GuessSubmitted, shootoutBoardRevealed, shootoutRevealedAnswers,
                 shootoutShuffledAnswers, shootoutTurnCount, shootoutActiveTeam, shootoutSuddenDeath,
@@ -1949,6 +1953,9 @@
                 setPowerupTimer(gameState.powerupTimer);
                 setTeam1Powerups(gameState.team1Powerups);
                 setTeam2Powerups(gameState.team2Powerups);
+                setTeam1DoublerActive(!!gameState.team1DoublerActive); setTeam2DoublerActive(!!gameState.team2DoublerActive);
+                setTeam1ExtraTimeActive(!!gameState.team1ExtraTimeActive); setTeam2ExtraTimeActive(!!gameState.team2ExtraTimeActive);
+                setTeam1DoubleDipUsed(!!gameState.team1DoubleDipUsed); setTeam2DoubleDipUsed(!!gameState.team2DoubleDipUsed);
                 setBonusScore1(gameState.bonusScore1);
                 setBonusScore2(gameState.bonusScore2);
                 setBonusQuestionIndex(gameState.bonusQuestionIndex);
@@ -2432,6 +2439,22 @@
                 }
             };
 
+            // Icon color for a powerup, used by BOTH the Host and the Stream screens:
+            //   powerup-activated (green) = being used,  powerup-available (red) = can be used right now,  powerup-used (grey) = can't be used right now.
+            // Point Doubler / Extra Time: red only during the 30-second powerup phase.  Double Dip: red only once its team's question is revealed.
+            const powerupClass = (team, kind) => {
+                const pw = team === 1 ? team1Powerups : team2Powerups;
+                const doubler = team === 1 ? team1DoublerActive : team2DoublerActive;
+                const extra = team === 1 ? team1ExtraTimeActive : team2ExtraTimeActive;
+                const dipOn = doubleDipActive && doubleDipTeam === team;
+                const dipSpent = team === 1 ? team1DoubleDipUsed : team2DoubleDipUsed;
+                if (kind === 'pointDoubler') return doubler ? 'powerup-activated' : (powerupPhase && pw.pointDoubler && !extra) ? 'powerup-available' : 'powerup-used';
+                if (kind === 'extraTime') return extra ? 'powerup-activated' : (powerupPhase && pw.extraTime && !doubler) ? 'powerup-available' : 'powerup-used';
+                if (dipOn) return 'powerup-activated';
+                if (dipSpent || !pw.doubleDip) return 'powerup-used';
+                return (!powerupPhase && activeTeam === team && showQuestion && !stealAttempted && !doubleDipSecondGuess && !doubler && !extra) ? 'powerup-available' : 'powerup-used';
+            };
+
             const handlePowerup = (team, powerup) => {
                 // Only allow Point Doubler and Extra Time during powerup phase
                 if ((powerup === 'pointDoubler' || powerup === 'extraTime') && !powerupPhase) return;
@@ -2471,6 +2494,7 @@
                             setDoubleDipActive(false);
                             setDoubleDipTeam(null);
                             setTeam1Powerups({...team1Powerups, doubleDip: true});
+                            setTeam1DoubleDipUsed(false);   // turned back off: it's available again
                         } else if (team1Powerups.doubleDip && activeTeam === 1 && showQuestion && !stealAttempted && !doubleDipSecondGuess) {
                             if (team1DoublerActive || team1ExtraTimeActive) return;
                             if (doubleDipActive) return;
@@ -2509,6 +2533,7 @@
                             setDoubleDipActive(false);
                             setDoubleDipTeam(null);
                             setTeam2Powerups({...team2Powerups, doubleDip: true});
+                            setTeam2DoubleDipUsed(false);   // turned back off: it's available again
                         } else if (team2Powerups.doubleDip && activeTeam === 2 && showQuestion && !stealAttempted && !doubleDipSecondGuess) {
                             if (team2DoublerActive || team2ExtraTimeActive) return;
                             if (doubleDipActive) return;
@@ -2948,6 +2973,7 @@
                         powerupTimer,
                         team1Powerups,
                         team2Powerups,
+                        team1DoublerActive, team2DoublerActive, team1ExtraTimeActive, team2ExtraTimeActive, team1DoubleDipUsed, team2DoubleDipUsed,
                         bonusScore1,
                         bonusScore2,
                         bonusQuestionIndex,
@@ -7436,11 +7462,7 @@
                                             <img
                                                 src={`${imagePath}powerup-double.png`}
                                                 alt="Team 1 Point Doubler"
-                                                className={
-                                                    team1DoublerActive ? 'powerup-activated' :
-                                                    (team1ExtraTimeActive || (doubleDipActive && doubleDipTeam === 1) || (!powerupPhase && showQuestion)) ? 'powerup-used' :
-                                                    'powerup-available'
-                                                }
+                                                className={powerupClass(1, 'pointDoubler')}
                                                 style={{width: '84px', height: '84px'}}
                                                 onClick={userMode === 'host' ? () => handlePowerup(1, 'pointDoubler') : undefined}
                                             />
@@ -7450,11 +7472,7 @@
                                             <img
                                                 src={`${imagePath}powerup-time.png`}
                                                 alt="Team 1 Extra Time"
-                                                className={
-                                                    team1ExtraTimeActive ? 'powerup-activated' :
-                                                    (team1DoublerActive || (doubleDipActive && doubleDipTeam === 1) || (!powerupPhase && showQuestion)) ? 'powerup-used' :
-                                                    'powerup-available'
-                                                }
+                                                className={powerupClass(1, 'extraTime')}
                                                 style={{width: '84px', height: '84px'}}
                                                 onClick={userMode === 'host' ? () => handlePowerup(1, 'extraTime') : undefined}
                                             />
@@ -7464,11 +7482,7 @@
                                             <img
                                                 src={`${imagePath}powerup-dip.png`}
                                                 alt="Team 1 Double Dip"
-                                                className={
-                                                    (doubleDipActive && doubleDipTeam === 1) || team1DoubleDipUsed ? 'powerup-activated' :
-                                                    (team1DoublerActive || team1ExtraTimeActive || doubleDipSecondGuess) ? 'powerup-used' :
-                                                    'powerup-available'
-                                                }
+                                                className={powerupClass(1, 'doubleDip')}
                                                 style={{width: '84px', height: '84px'}}
                                                 onClick={userMode === 'host' ? () => handlePowerup(1, 'doubleDip') : undefined}
                                             />
@@ -7626,11 +7640,7 @@
                                             <img
                                                 src={`${imagePath}powerup-dip.png`}
                                                 alt="Team 2 Double Dip"
-                                                className={
-                                                    (doubleDipActive && doubleDipTeam === 2) || team2DoubleDipUsed ? 'powerup-activated' :
-                                                    (team2DoublerActive || team2ExtraTimeActive || doubleDipSecondGuess) ? 'powerup-used' :
-                                                    'powerup-available'
-                                                }
+                                                className={powerupClass(2, 'doubleDip')}
                                                 style={{width: '84px', height: '84px'}}
                                                 onClick={userMode === 'host' ? () => handlePowerup(2, 'doubleDip') : undefined}
                                             />
@@ -7640,11 +7650,7 @@
                                             <img
                                                 src={`${imagePath}powerup-time.png`}
                                                 alt="Team 2 Extra Time"
-                                                className={
-                                                    team2ExtraTimeActive ? 'powerup-activated' :
-                                                    (team2DoublerActive || (doubleDipActive && doubleDipTeam === 2) || (!powerupPhase && showQuestion)) ? 'powerup-used' :
-                                                    'powerup-available'
-                                                }
+                                                className={powerupClass(2, 'extraTime')}
                                                 style={{width: '84px', height: '84px'}}
                                                 onClick={userMode === 'host' ? () => handlePowerup(2, 'extraTime') : undefined}
                                             />
@@ -7654,11 +7660,7 @@
                                             <img
                                                 src={`${imagePath}powerup-double.png`}
                                                 alt="Team 2 Point Doubler"
-                                                className={
-                                                    team2DoublerActive ? 'powerup-activated' :
-                                                    (team2ExtraTimeActive || (doubleDipActive && doubleDipTeam === 2) || (!powerupPhase && showQuestion)) ? 'powerup-used' :
-                                                    'powerup-available'
-                                                }
+                                                className={powerupClass(2, 'pointDoubler')}
                                                 style={{width: '84px', height: '84px'}}
                                                 onClick={userMode === 'host' ? () => handlePowerup(2, 'pointDoubler') : undefined}
                                             />
