@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:37 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:49 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -727,14 +727,33 @@
             }
 
             // Week: stacked in the center (matchup only), or one line across the bottom / top
+            // A plain number becomes "WEEK 12"; anything else (QUARTERFINALS, CHAMPIONSHIP BRACKET...) is used exactly as typed
             const wk = String(week || '').trim();
+            const isNum = /^\d+$/.test(wk);
+            const wkLine = isNum ? `WEEK ${wk}` : wk.toUpperCase();
             if (wk && weekPos === 'center' && !isAnnounce) {
-                stroked('WEEK', W / 2, 150, 54, 200);
-                stroked(wk.toUpperCase(), W / 2, 265, 170, 200);
+                if (isNum) {
+                    stroked('WEEK', W / 2, 150, 54, 200);
+                    stroked(wk, W / 2, 265, 170, 200);
+                } else {
+                    // words wrapped onto stacked lines between the two logos (" - " starts a new line)
+                    const lines = [];
+                    ctx.font = '900 60px Poppins, Arial Black, Arial, sans-serif';
+                    wk.toUpperCase().split(/\s+-\s+/).forEach(part => {
+                        let cur = '';
+                        part.split(/\s+/).forEach(wd => {
+                            const t = cur ? cur + ' ' + wd : wd;
+                            if (cur && ctx.measureText(t).width > 330) { lines.push(cur); cur = wd; } else cur = t;
+                        });
+                        if (cur) lines.push(cur);
+                    });
+                    const lh = 72, top = 205 - (lines.length - 1) * lh / 2;
+                    lines.forEach((ln, i) => stroked(ln, W / 2, top + i * lh, 60, 340));
+                }
             } else if (wk && weekPos === 'bottom') {
-                stroked(`WEEK ${wk.toUpperCase()}`, W / 2, H - 46, 76, 620);
+                stroked(wkLine, W / 2, H - 46, 76, 1100);
             } else if (wk && weekPos === 'top') {
-                stroked(`WEEK ${wk.toUpperCase()}`, W / 2, 50, 76, 620);
+                stroked(wkLine, W / 2, 50, 76, 1100);
             }
         };
 
@@ -979,7 +998,7 @@
                     const a = document.createElement('a');
                     const slug = (t) => (t ? t.name.replace(/[^A-Za-z0-9]+/g, '') : 'Team');
                     a.href = URL.createObjectURL(blob);
-                    a.download = mode === 'announce' ? 'HTL-Announcement.png' : `HTL-Week${String(week || '').replace(/[^A-Za-z0-9]/g, '')}-${slug(team(t1))}-vs-${slug(team(t2))}.png`;
+                    a.download = mode === 'announce' ? 'HTL-Announcement.png' : `HTL-${/^\d+$/.test(String(week || '').trim()) ? 'Week' : ''}${String(week || '').replace(/[^A-Za-z0-9]/g, '')}-${slug(team(t1))}-vs-${slug(team(t2))}.png`;
                     document.body.appendChild(a); a.click(); a.remove();
                     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
                 }, 'image/png');
@@ -1003,6 +1022,24 @@
             const weekOptions = mode === 'announce'
                 ? [['hidden', 'Hidden'], ['top', 'Top line'], ['bottom', 'Bottom line']]
                 : [['center', 'Center'], ['top', 'Top line'], ['bottom', 'Bottom line'], ['hidden', 'Hidden']];
+            // Type a number for "WEEK #", or type anything else / tap a button for playoff labels
+            const ROUNDS = ['Quarterfinals', 'Semi-finals', 'Finals'], BRACKETS = ['Championship Bracket', 'Chump Bracket'];
+            const pickLabel = (label, group) => {
+                const parts = String(week || '').split(/\s+-\s+/).map(x => x.trim()).filter(x => x && !/^\d+$/.test(x));
+                const others = parts.filter(x => !group.includes(x));
+                setWeek(parts.includes(label) ? others.join(' - ') : (group === ROUNDS ? [label, ...others] : [...others, label]).join(' - '));
+            };
+            const weekChips = (
+                <div className="flex flex-col gap-2">
+                    <div style={{fontSize: '22px'}} className="text-gray-300">Quick labels (the Week box above can also say anything you type)</div>
+                    <div className="flex flex-wrap gap-2">
+                        {[...ROUNDS.map(l => [l, ROUNDS]), ...BRACKETS.map(l => [l, BRACKETS])].map(([l, g]) => {
+                            const on = String(week || '').split(/\s+-\s+/).map(x => x.trim()).includes(l);
+                            return <button key={l} onClick={() => pickLabel(l, g)} className={`font-bold rounded-lg border-2 ${on ? 'bg-yellow-500 text-black border-yellow-300' : 'bg-gray-700 text-white border-gray-500 hover:bg-gray-600'}`} style={{fontSize: '22px', padding: '8px 14px'}}>{l}</button>;
+                        })}
+                    </div>
+                </div>
+            );
             const switchMode = (m) => { setMode(m); setCenterSize(100); setWeekPos(m === 'announce' ? 'hidden' : 'center'); };
             return (
                 <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 10000}}>
@@ -1023,7 +1060,7 @@
                                     </div>
                                 ))}
                                 <div className="flex gap-4">
-                                    <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Week
+                                    <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Week or round
                                         <input value={week} onChange={(e) => setWeek(e.target.value)} className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
                                     </label>
                                     <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 1 record
@@ -1045,10 +1082,11 @@
                                 </label>
                                 {slider('HTL logo size', centerSize, setCenterSize, 40, 200)}
                                 {slider('Text size', textSize, setTextSize, 40, 180)}
-                                <label className="flex flex-col" style={{fontSize: '24px'}}>Week (optional)
+                                <label className="flex flex-col" style={{fontSize: '24px'}}>Week or round (optional)
                                     <input value={week} onChange={(e) => setWeek(e.target.value)} className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
                                 </label>
                             </>)}
+                            {weekChips}
                             <div style={{fontSize: '24px'}}>Week placement</div>
                             {seg(weekOptions, weekPos, setWeekPos)}
                             <div className="text-yellow-300" style={{fontSize: '22px', minHeight: '60px'}}>{status}</div>
