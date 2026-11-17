@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 15, 2026 7:15 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:11 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -638,8 +638,10 @@
         // The next unplayed week = games played so far + 1 (every team plays once per week)
         const nextWeekFromRows = (rows) => rows.length ? Math.max(...rows.map(r => r.w + r.l)) + 1 : '';
 
-        // Draws the YouTube thumbnail (1280x720) on a canvas: game background, both team logos, the week and the records
-        const drawThumbnail = async (canvas, { imagePath, team1, team2, week, rec1, rec2 }) => {
+        // Draws the YouTube thumbnail (1280x720) on a canvas.
+        // mode 'matchup': game background, both team logos + records, a center graphic (HTL logo / VS / none) and the week.
+        // mode 'announce': game background with the HTL logo alone in the middle plus free text under it (season updates, bracket news...).
+        const drawThumbnail = async (canvas, { imagePath, mode, team1, team2, week, rec1, rec2, center, centerSize, weekPos, text, textSize }) => {
             const W = 1280, H = 720;
             canvas.width = W; canvas.height = H;
             const ctx = canvas.getContext('2d');
@@ -650,11 +652,13 @@
                 img.onerror = () => resolve(null);
                 img.src = src;
             });
-            const [bg, logo1, logo2, htl] = await Promise.all([
+            const isAnnounce = mode === 'announce';
+            const [bg, logo1, logo2, htl, vs] = await Promise.all([
                 load(`${imagePath}background.png`),
-                team1 ? load(`${imagePath}${team1.logo}`) : null,
-                team2 ? load(`${imagePath}${team2.logo}`) : null,
-                load(`${imagePath}htl-logo.png`)
+                (!isAnnounce && team1) ? load(`${imagePath}${team1.logo}`) : null,
+                (!isAnnounce && team2) ? load(`${imagePath}${team2.logo}`) : null,
+                load(`${imagePath}htl-logo.png`),
+                load(`${imagePath}versus.png`)
             ]);
             ctx.fillStyle = '#12082a'; ctx.fillRect(0, 0, W, H);
             if (bg) {  // "cover" fit, like the game screen
@@ -665,10 +669,6 @@
                 const k = Math.min(size / img.width, size / img.height);
                 ctx.drawImage(img, x + (size - img.width * k) / 2, y + (size - img.height * k) / 2, img.width * k, img.height * k);
             };
-            ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30;
-            if (logo1) fit(logo1, 10, 10, 540);
-            if (logo2) fit(logo2, W - 550, 10, 540);
-            ctx.restore();
             const stroked = (text, cx, cy, size, maxW) => {
                 ctx.font = `900 ${size}px Poppins, Arial Black, Arial, sans-serif`;
                 let fs = size;
@@ -678,14 +678,45 @@
                 ctx.strokeStyle = 'black'; ctx.strokeText(text, cx, cy);
                 ctx.fillStyle = 'white'; ctx.fillText(text, cx, cy);
             };
-            if (rec1) stroked(rec1, 280, 598, 108, 440);
-            if (rec2) stroked(rec2, W - 280, 598, 108, 440);
+            const pct = (Number(centerSize) || 100) / 100;
+
+            if (isAnnounce) {
+                // HTL logo by itself in the middle, with the free text underneath (blank lines are skipped)
+                const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+                const ts = Number(textSize) || 100;
+                const lineH = ts * 1.18, textH = lines.length * lineH, gap = lines.length ? 28 : 0;
+                const wkShown = String(week || '').trim() && (weekPos === 'top' || weekPos === 'bottom');
+                const band = wkShown ? 100 : 0;   // keep the logo + text clear of the Week line
+                const S = Math.max(80, Math.min(420 * pct, H - 60 - band * 2 - gap - textH));   // shrinks if the text needs the room
+                const top = (H - (S + gap + textH)) / 2;
+                if (htl) { ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30; fit(htl, W / 2 - S / 2, top, S); ctx.restore(); }
+                lines.forEach((ln, i) => stroked(ln.toUpperCase(), W / 2, top + S + gap + lineH * (i + 0.5), ts, 1180));
+            } else {
+                ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30;
+                if (logo1) fit(logo1, 10, 10, 540);
+                if (logo2) fit(logo2, W - 550, 10, 540);
+                ctx.restore();
+                if (rec1) stroked(rec1, 280, 598, 108, 440);
+                if (rec2) stroked(rec2, W - 280, 598, 108, 440);
+                const cg = center === 'vs' ? vs : center === 'none' ? null : htl;
+                if (cg) {
+                    const S = (center === 'vs' ? 270 : 190) * pct;
+                    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 20;
+                    fit(cg, W / 2 - S / 2, 460 - S / 2, S);
+                    ctx.restore();
+                }
+            }
+
+            // Week: stacked in the center (matchup only), or one line across the bottom / top
             const wk = String(week || '').trim();
-            if (wk) {
+            if (wk && weekPos === 'center' && !isAnnounce) {
                 stroked('WEEK', W / 2, 150, 54, 200);
                 stroked(wk.toUpperCase(), W / 2, 265, 170, 200);
+            } else if (wk && weekPos === 'bottom') {
+                stroked(`WEEK ${wk.toUpperCase()}`, W / 2, H - 46, 76, 620);
+            } else if (wk && weekPos === 'top') {
+                stroked(`WEEK ${wk.toUpperCase()}`, W / 2, 50, 76, 620);
             }
-            if (htl) fit(htl, W / 2 - 95, 365, 190);
         };
 
         // Host tool (room-code screen): pick two teams + week, records are looked up automatically, then download the PNG
@@ -890,6 +921,12 @@
             const [rec2, setRec2] = useState('');
             const [status, setStatus] = useState('');
             const [busy, setBusy] = useState(false);
+            const [mode, setMode] = useState('matchup');          // 'matchup' | 'announce' (HTL logo alone + text)
+            const [center, setCenter] = useState('htl');           // matchup center graphic: 'htl' | 'vs' | 'none'
+            const [centerSize, setCenterSize] = useState(100);      // percent
+            const [weekPos, setWeekPos] = useState('center');       // 'center' | 'bottom' | 'top' | 'hidden'
+            const [text, setText] = useState('');                   // announcement text (Enter = new line)
+            const [textSize, setTextSize] = useState(100);
             const canvasRef = useRef(null);
             const team = (id) => teamsData.find(t => String(t.id) === String(id)) || null;
 
@@ -913,8 +950,8 @@
             };
 
             useEffect(() => {
-                if (canvasRef.current) drawThumbnail(canvasRef.current, { imagePath, team1: team(t1), team2: team(t2), week, rec1, rec2 });
-            }, [t1, t2, week, rec1, rec2]);
+                if (canvasRef.current) drawThumbnail(canvasRef.current, { imagePath, mode, team1: team(t1), team2: team(t2), week, rec1, rec2, center, centerSize, weekPos, text, textSize });
+            }, [t1, t2, week, rec1, rec2, mode, center, centerSize, weekPos, text, textSize]);
 
             const download = () => {
                 if (!canvasRef.current) return;
@@ -923,13 +960,31 @@
                     const a = document.createElement('a');
                     const slug = (t) => (t ? t.name.replace(/[^A-Za-z0-9]+/g, '') : 'Team');
                     a.href = URL.createObjectURL(blob);
-                    a.download = `HTL-Week${String(week || '').replace(/[^A-Za-z0-9]/g, '')}-${slug(team(t1))}-vs-${slug(team(t2))}.png`;
+                    a.download = mode === 'announce' ? 'HTL-Announcement.png' : `HTL-Week${String(week || '').replace(/[^A-Za-z0-9]/g, '')}-${slug(team(t1))}-vs-${slug(team(t2))}.png`;
                     document.body.appendChild(a); a.click(); a.remove();
                     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
                 }, 'image/png');
             };
 
             const field = { fontSize: '26px', padding: '10px 14px', width: '100%', minWidth: 0 };
+            const canDownload = mode === 'announce' || (t1 && t2);
+            const seg = (options, value, set) => (
+                <div className="flex gap-2">
+                    {options.map(([v, l]) => (
+                        <button key={v} onClick={() => set(v)} className={`flex-1 font-bold rounded-lg border-2 ${value === v ? 'bg-purple-600 border-purple-300 text-white' : 'bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700'}`} style={{fontSize: '24px', padding: '10px 8px'}}>{l}</button>
+                    ))}
+                </div>
+            );
+            const slider = (label, value, set, min, max) => (
+                <label className="flex flex-col" style={{fontSize: '24px'}}>
+                    <span>{label}: {value}%</span>
+                    <input type="range" min={min} max={max} step="5" value={value} onChange={(e) => set(Number(e.target.value))} style={{width: '100%', accentColor: '#7d3ad4', height: '30px'}} />
+                </label>
+            );
+            const weekOptions = mode === 'announce'
+                ? [['hidden', 'Hidden'], ['top', 'Top line'], ['bottom', 'Bottom line']]
+                : [['center', 'Center'], ['top', 'Top line'], ['bottom', 'Bottom line'], ['hidden', 'Hidden']];
+            const switchMode = (m) => { setMode(m); setCenterSize(100); setWeekPos(m === 'announce' ? 'hidden' : 'center'); };
             return (
                 <div className="absolute inset-0 flex items-center justify-center" style={{backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 10000}}>
                     <div className="bg-gray-900 rounded-3xl border-8 flex gap-8" style={{borderColor: '#7d3ad4', padding: '36px', width: '2500px'}}>
@@ -939,30 +994,47 @@
                         </div>
                         <div className="flex flex-col gap-4 flex-1 text-white" style={{minWidth: 0}}>
                             <h2 className="font-bold" style={{fontSize: '48px'}}>Thumbnail Maker</h2>
-                            {[['Team 1', t1, setT1, (v) => lookup(v, t2)], ['Team 2', t2, setT2, (v) => lookup(t1, v)]].map(([label, val, set, after]) => (
-                                <div key={label} className="flex flex-col" style={{fontSize: '24px'}}>
-                                    {label}
-                                    <DropSelect value={val} placeholder="Choose a team..." onChange={(v) => { set(v); after(v); }}
-                                        options={teamsData.map(t => ({ value: t.id, label: t.name }))} />
+                            {seg([['matchup', 'Matchup'], ['announce', 'Logo + Text']], mode, switchMode)}
+                            {mode === 'matchup' ? (<>
+                                {[['Team 1', t1, setT1, (v) => lookup(v, t2)], ['Team 2', t2, setT2, (v) => lookup(t1, v)]].map(([label, val, set, after]) => (
+                                    <div key={label} className="flex flex-col" style={{fontSize: '24px'}}>
+                                        {label}
+                                        <DropSelect value={val} placeholder="Choose a team..." onChange={(v) => { set(v); after(v); }}
+                                            options={teamsData.map(t => ({ value: t.id, label: t.name }))} />
+                                    </div>
+                                ))}
+                                <div className="flex gap-4">
+                                    <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Week
+                                        <input value={week} onChange={(e) => setWeek(e.target.value)} className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
+                                    </label>
+                                    <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 1 record
+                                        <input value={rec1} onChange={(e) => setRec1(e.target.value)} placeholder="7-4" className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
+                                    </label>
+                                    <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 2 record
+                                        <input value={rec2} onChange={(e) => setRec2(e.target.value)} placeholder="5-6" className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
+                                    </label>
                                 </div>
-                            ))}
-                            <div className="flex gap-4">
-                                <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Week
+                                <button onClick={() => lookup(t1, t2)} disabled={busy || (!t1 && !t2)} className="bg-gray-700 hover:bg-gray-600 text-white font-bold rounded-lg border-2 border-gray-500" style={{fontSize: '26px', padding: '12px'}}>
+                                    ↻ Look up records again
+                                </button>
+                                <div style={{fontSize: '24px'}}>Center graphic</div>
+                                {seg([['htl', 'HTL logo'], ['vs', 'VS'], ['none', 'None']], center, setCenter)}
+                                {center !== 'none' && slider('Center graphic size', centerSize, setCenterSize, 40, 250)}
+                            </>) : (<>
+                                <label className="flex flex-col" style={{fontSize: '24px'}}>Text (press Enter for a new line)
+                                    <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} placeholder={"BRACKET ANNOUNCEMENT\nPLAYOFFS BEGIN WEEK 13"} className="bg-gray-800 rounded border-2 border-gray-600" style={{...field, resize: 'none'}} />
+                                </label>
+                                {slider('HTL logo size', centerSize, setCenterSize, 40, 200)}
+                                {slider('Text size', textSize, setTextSize, 40, 180)}
+                                <label className="flex flex-col" style={{fontSize: '24px'}}>Week (optional)
                                     <input value={week} onChange={(e) => setWeek(e.target.value)} className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
                                 </label>
-                                <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 1 record
-                                    <input value={rec1} onChange={(e) => setRec1(e.target.value)} placeholder="7-4" className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
-                                </label>
-                                <label className="flex flex-col flex-1" style={{fontSize: '24px'}}>Team 2 record
-                                    <input value={rec2} onChange={(e) => setRec2(e.target.value)} placeholder="5-6" className="bg-gray-800 rounded border-2 border-gray-600" style={field} />
-                                </label>
-                            </div>
-                            <button onClick={() => lookup(t1, t2)} disabled={busy || (!t1 && !t2)} className="bg-gray-700 hover:bg-gray-600 text-white font-bold rounded-lg border-2 border-gray-500" style={{fontSize: '26px', padding: '12px'}}>
-                                ↻ Look up records again
-                            </button>
+                            </>)}
+                            <div style={{fontSize: '24px'}}>Week placement</div>
+                            {seg(weekOptions, weekPos, setWeekPos)}
                             <div className="text-yellow-300" style={{fontSize: '22px', minHeight: '60px'}}>{status}</div>
                             <div className="flex gap-4 mt-auto">
-                                <button onClick={download} disabled={!t1 || !t2} className={`flex-1 font-bold rounded-lg border-4 border-black ${t1 && t2 ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gray-600 text-gray-400'}`} style={{fontSize: '34px', padding: '18px'}}>
+                                <button onClick={download} disabled={!canDownload} className={`flex-1 font-bold rounded-lg border-4 border-black ${canDownload ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gray-600 text-gray-400'}`} style={{fontSize: '34px', padding: '18px'}}>
                                     ⬇ DOWNLOAD PNG
                                 </button>
                                 <button onClick={onClose} className="bg-red-500 hover:bg-red-600 text-white font-bold rounded-lg border-4 border-black" style={{fontSize: '34px', padding: '18px 40px'}}>
