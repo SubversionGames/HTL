@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:23 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:27 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -706,7 +706,7 @@
                 }
                 // tilted logo: slice the image into thin columns and shrink the far side (perspective 1000px, rotateY 15deg in the intro)
                 const tilted = (img, boxLeft, deg) => {
-                    const BOX = 400, d = 400, th = deg * Math.PI / 180;
+                    const BOX = 450, d = 400, th = deg * Math.PI / 180;
                     const k = Math.min(BOX / img.width, BOX / img.height);
                     const dw = img.width * k, dh = img.height * k;
                     const cx = boxLeft + BOX / 2, cy = H / 2;
@@ -720,8 +720,8 @@
                     }
                     ctx.restore();
                 };
-                if (logo1) tilted(logo1, 64, 15);
-                if (logo2) tilted(logo2, W - 64 - 400, -15);
+                if (logo1) tilted(logo1, 39, 15);
+                if (logo2) tilted(logo2, W - 39 - 450, -15);
                 if (rec1) stroked(rec1, 264, 586, 72, 380);
                 if (rec2) stroked(rec2, W - 264, 586, 72, 380);
             }
