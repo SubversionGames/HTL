@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:11 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:18 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -692,12 +692,7 @@
                 if (htl) { ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30; fit(htl, W / 2 - S / 2, top, S); ctx.restore(); }
                 lines.forEach((ln, i) => stroked(ln.toUpperCase(), W / 2, top + S + gap + lineH * (i + 0.5), ts, 1180));
             } else {
-                ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30;
-                if (logo1) fit(logo1, 10, 10, 540);
-                if (logo2) fit(logo2, W - 550, 10, 540);
-                ctx.restore();
-                if (rec1) stroked(rec1, 280, 598, 108, 440);
-                if (rec2) stroked(rec2, W - 280, 598, 108, 440);
+                // center graphic first so the team logos sit on top of it (like the pre-match intro)
                 const cg = center === 'vs' ? vs : center === 'none' ? null : htl;
                 if (cg) {
                     const S = (center === 'vs' ? 270 : 190) * pct;
@@ -705,6 +700,12 @@
                     fit(cg, W / 2 - S / 2, 460 - S / 2, S);
                     ctx.restore();
                 }
+                ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 30;
+                if (logo1) fit(logo1, -5, 5, 600);
+                if (logo2) fit(logo2, W - 595, 5, 600);
+                ctx.restore();
+                if (rec1) stroked(rec1, 280, 598, 108, 440);
+                if (rec2) stroked(rec2, W - 280, 598, 108, 440);
             }
 
             // Week: stacked in the center (matchup only), or one line across the bottom / top
