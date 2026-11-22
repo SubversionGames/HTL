@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 17, 2026 12:49 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 21, 2026 8:24 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -801,13 +801,18 @@
         // otherwise it is the full-screen intro scene driven by `stage` (1 = shown, 2 = playing teams light up, 3 = they advance, 4 = fades out).
         function BracketDiagram({ bySeed, t1, t2, stage, compact, title, accent, editor, imagePath }) {
             const res = resolveBracket(bySeed);
+            // Two-sided layout: 1v8 (top) and 4v5 (bottom) on the left, 2v7 (top) and 3v6 (bottom) on the right,
+            // meeting at the final in the middle. Kept inside the area between the player video tiles.
             const C = compact
-                ? { W: 1480, H: 770, top: 74, bot: 8, cw: 340, ch: 66, lp: 10, gap: 375, logo: 46, f: 23, sf: 20, tf: 36 }
-                : { W: 3200, H: 1800, top: 250, bot: 60, cw: 660, ch: 130, lp: 70, gap: 770, logo: 104, f: 42, sf: 34, tf: 110 };
-            const step = (C.H - C.top - C.bot) / 8;
-            const ys = [Array.from({ length: 8 }, (_, i) => C.top + step * (i + 0.5))];
-            for (let c = 1; c < 4; c++) ys.push(Array.from({ length: ys[c - 1].length / 2 }, (_, i) => (ys[c - 1][2 * i] + ys[c - 1][2 * i + 1]) / 2));
-            const xl = (c) => C.lp + c * C.gap;
+                ? { W: 1480, H: 480, cw: 190, ch: 84, g: 20, logo: 50, f: 17, sf: 15, tf: 34, yc: 268, step: 104 }
+                : { W: 3200, H: 1800, cw: 280, ch: 124, g: 56, logo: 76, f: 28, sf: 26, tf: 110, yc: 1035, step: 300 };
+            const lp = (C.W - (7 * C.cw + 6 * C.g)) / 2;
+            // display column (0..6, left to right) for round c, slot i
+            const dcOf = (c, i) => c === 0 ? (i < 4 ? 0 : 6) : c === 1 ? (i < 2 ? 1 : 5) : c === 2 ? (i === 0 ? 2 : 4) : 3;
+            const ys0 = Array.from({ length: 4 }, (_, j) => C.yc + (j - 1.5) * C.step);
+            const ys1 = [(ys0[0] + ys0[1]) / 2, (ys0[2] + ys0[3]) / 2];
+            const xOf = (c, i) => lp + dcOf(c, i) * (C.cw + C.g);
+            const yOf = (c, i) => c === 0 ? ys0[i % 4] : c === 1 ? ys1[i % 2] : C.yc;
             const match = (!compact && t1 && t2) ? findBracketMatch(res, t1, t2) : null;
             const isPlayingTeam = (team) => team && (String(team.id) === String(t1) || String(team.id) === String(t2));
             // only the cards in the round where the two teams actually meet light up (earlier copies of them stay normal)
@@ -820,8 +825,8 @@
                 const dim = lit && !playing;
                 const hideForGhost = moving && playing;
                 return {
-                    position: 'absolute', left: xl(c), top: ys[c][i] - C.ch / 2, width: C.cw, height: C.ch,
-                    display: 'flex', alignItems: 'center', gap: C.ch * 0.12, padding: `0 ${C.ch * 0.14}px`, boxSizing: 'border-box',
+                    position: 'absolute', left: xOf(c, i), top: yOf(c, i) - C.ch / 2, width: C.cw, height: C.ch,
+                    display: 'flex', alignItems: 'center', gap: C.ch * 0.1, padding: `0 ${C.ch * 0.1}px`, boxSizing: 'border-box',
                     borderRadius: C.ch * 0.16, borderWidth: compact ? 3 : 5, borderStyle: team ? 'solid' : 'dashed',
                     borderColor: team ? (lit && playing ? '#facc15' : (team.color || '#7d3ad4')) : '#4b5563',
                     backgroundColor: team ? 'rgba(8,12,28,0.9)' : 'rgba(8,12,28,0.45)',
@@ -834,24 +839,28 @@
             };
             const cardInner = (team, seedLabel) => team ? (
                 <>
-                    <span style={{ fontSize: C.sf, color: '#fbbf24', width: C.sf * 1.7, textAlign: 'center', flexShrink: 0 }}>{team.seed || seedLabel}</span>
+                    <span style={{ position: 'absolute', left: C.ch * 0.05, top: C.ch * 0.03, fontSize: C.sf, lineHeight: 1, color: '#fbbf24', textShadow: '0 0 6px #000, 0 0 6px #000' }}>{team.seed || seedLabel}</span>
                     <img src={`${imagePath}${team.logo}`} alt="" style={{ width: C.logo, height: C.logo, objectFit: 'contain', flexShrink: 0 }} />
-                    <span style={{ fontSize: C.f, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textDecoration: team.elim ? 'line-through' : 'none' }}>{team.name}</span>
+                    <span style={{ fontSize: C.f, lineHeight: 1.08, flex: 1, minWidth: 0, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', textDecoration: team.elim ? 'line-through' : 'none' }}>{team.name}</span>
                 </>
             ) : <span style={{ fontSize: C.sf, color: '#6b7280', width: '100%', textAlign: 'center' }}>{seedLabel}</span>;
 
-            // connector lines
+            // connector lines: each team's line runs from the edge of its card that faces the next round to the winner's slot
             const lines = [];
             for (let c = 0; c < 3; c++) {
-                for (let m = 0; m < ys[c + 1].length; m++) {
-                    const ya = ys[c][2 * m], yb = ys[c][2 * m + 1], yn = ys[c + 1][m];
-                    const x1 = xl(c) + C.cw, xm = x1 + (C.gap - C.cw) / 2, x2 = xl(c + 1);
-                    lines.push(<path key={`g${c}-${m}`} d={`M ${x1} ${ya} H ${xm} V ${yn} H ${x2} M ${x1} ${yb} H ${xm}`} stroke="#4b5563" strokeWidth={compact ? 3 : 6} fill="none" />);
-                    const w = res.cols[c + 1][m];
-                    if (w) {
-                        const yw = res.cols[c][2 * m] === w ? ya : yb;
-                        lines.push(<path key={`w${c}-${m}`} d={`M ${x1} ${yw} H ${xm} V ${yn} H ${x2}`} stroke="#facc15" strokeWidth={compact ? 4 : 8} fill="none" />);
-                    }
+                const nextLen = c === 0 ? 4 : c === 1 ? 2 : 1;
+                for (let m = 0; m < nextLen; m++) {
+                    [2 * m, 2 * m + 1].forEach(ci => {
+                        const dcC = dcOf(c, ci), dcP = dcOf(c + 1, m);
+                        const fromLeft = dcC < dcP;
+                        const x1 = fromLeft ? xOf(c, ci) + C.cw : xOf(c, ci);
+                        const x2 = fromLeft ? xOf(c + 1, m) : xOf(c + 1, m) + C.cw;
+                        const xm = (x1 + x2) / 2, y1 = yOf(c, ci), y2 = yOf(c + 1, m);
+                        const d = `M ${x1} ${y1} H ${xm} V ${y2} H ${x2}`;
+                        lines.push(<path key={`g${c}-${ci}`} d={d} stroke="#4b5563" strokeWidth={compact ? 3 : 6} fill="none" />);
+                        const w = res.cols[c + 1][m];
+                        if (w && res.cols[c][ci] === w) lines.push(<path key={`w${c}-${ci}`} d={d} stroke="#facc15" strokeWidth={compact ? 4 : 8} fill="none" />);
+                    });
                 }
             }
 
@@ -861,23 +870,23 @@
             if (match) {
                 const r = match.round, m = match.idx;
                 const src = [res.cols[r][2 * m], res.cols[r][2 * m + 1]];
-                const nodeY = ys[r + 1][m];
-                const offs = [-(C.ch / 2 + 10), (C.ch / 2 + 10)];
+                const nodeY = yOf(r + 1, m);
+                const offs = [-(C.ch / 2 + 32), (C.ch / 2 + 32)];   // wider gap so the VS badge sits between the two cards
                 src.forEach((team, k) => {
-                    const sy = ys[r][2 * m + k];
+                    const sy = yOf(r, 2 * m + k);
                     ghosts.push(
                         <div key={`gh${k}`} style={{
                             ...cardStyle(team, r, 2 * m + k), opacity: stage >= 2 ? 1 : 0, filter: 'none',
-                            left: moving ? xl(r + 1) : xl(r), top: (moving ? nodeY + offs[k] : sy) - C.ch / 2,
+                            left: moving ? xOf(r + 1, m) : xOf(r, 2 * m + k), top: (moving ? nodeY + offs[k] : sy) - C.ch / 2,
                             transform: 'scale(1.06)', transition: 'left 1.1s ease-in-out, top 1.1s ease-in-out, opacity 0.5s ease', zIndex: 5
                         }}>{cardInner(team, '')}</div>
                     );
                 });
                 vs = (
                     <div style={{
-                        position: 'absolute', left: xl(r + 1) + C.cw / 2 - C.ch * 0.4, top: nodeY - C.ch * 0.4, width: C.ch * 0.8, height: C.ch * 0.8,
+                        position: 'absolute', left: xOf(r + 1, m) + C.cw / 2 - C.ch * 0.26, top: nodeY - C.ch * 0.26, width: C.ch * 0.52, height: C.ch * 0.52,
                         borderRadius: '50%', backgroundColor: '#dc2626', border: `${compact ? 3 : 6}px solid white`, color: 'white', fontWeight: 900,
-                        fontSize: C.f * 0.9, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 6,
+                        fontSize: C.f * 0.8, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 6,
                         opacity: moving ? 1 : 0, transform: moving ? 'scale(1)' : 'scale(0.2)', transition: 'all 0.6s ease 0.9s'
                     }}>VS</div>
                 );
