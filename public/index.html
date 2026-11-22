@@ -329,7 +329,7 @@
     <div id="root"></div>
     <!-- Small, faint "last updated" stamp for the Host / Main screens (hidden on the Stream screen). The text between
          the markers is rewritten every time an update is published. -->
-    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 21, 2026 8:24 PM PT<!--/VERSION--></div>
+    <div id="htl-version" style="position:fixed;right:10px;bottom:6px;z-index:2147483000;pointer-events:none;font:600 11px/1.2 Poppins,Arial,sans-serif;color:#fff;opacity:0.3;text-shadow:0 0 3px #000;letter-spacing:0.02em">Version Update: <!--VERSION-->Nov 21, 2026 8:37 PM PT<!--/VERSION--></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
@@ -804,8 +804,8 @@
             // Two-sided layout: 1v8 (top) and 4v5 (bottom) on the left, 2v7 (top) and 3v6 (bottom) on the right,
             // meeting at the final in the middle. Kept inside the area between the player video tiles.
             const C = compact
-                ? { W: 1480, H: 480, cw: 190, ch: 84, g: 20, logo: 50, f: 17, sf: 15, tf: 34, yc: 268, step: 104 }
-                : { W: 3200, H: 1800, cw: 280, ch: 124, g: 56, logo: 76, f: 28, sf: 26, tf: 110, yc: 1035, step: 300 };
+                ? { W: 1480, H: 500, cw: 190, ch: 98, g: 20, logo: 50, f: 17, sf: 15, tf: 34, yc: 280, step: 110 }
+                : { W: 3200, H: 1800, cw: 280, ch: 210, g: 56, logo: 76, f: 28, sf: 36, tf: 110, yc: 1065, step: 370 };
             const lp = (C.W - (7 * C.cw + 6 * C.g)) / 2;
             // display column (0..6, left to right) for round c, slot i
             const dcOf = (c, i) => c === 0 ? (i < 4 ? 0 : 6) : c === 1 ? (i < 2 ? 1 : 5) : c === 2 ? (i === 0 ? 2 : 4) : 3;
@@ -820,28 +820,25 @@
             const lit = !compact && stage >= 2;
             const moving = !compact && stage >= 3 && match;
 
+            // Each team is shown as just its logo (no card, no name). Empty slots are a small dashed box.
             const cardStyle = (team, c, i) => {
                 const playing = isPlaying(team, c);
                 const dim = lit && !playing;
                 const hideForGhost = moving && playing;
                 return {
                     position: 'absolute', left: xOf(c, i), top: yOf(c, i) - C.ch / 2, width: C.cw, height: C.ch,
-                    display: 'flex', alignItems: 'center', gap: C.ch * 0.1, padding: `0 ${C.ch * 0.1}px`, boxSizing: 'border-box',
-                    borderRadius: C.ch * 0.16, borderWidth: compact ? 3 : 5, borderStyle: team ? 'solid' : 'dashed',
-                    borderColor: team ? (lit && playing ? '#facc15' : (team.color || '#7d3ad4')) : '#4b5563',
-                    backgroundColor: team ? 'rgba(8,12,28,0.9)' : 'rgba(8,12,28,0.45)',
-                    boxShadow: lit && playing ? '0 0 60px 12px rgba(250,204,21,0.75)' : 'none',
-                    transform: lit && playing ? 'scale(1.06)' : 'scale(1)',
-                    filter: team && team.elim ? 'grayscale(1)' : 'none',
-                    opacity: hideForGhost ? 0.1 : (team && team.elim ? 0.45 : (dim ? 0.28 : 1)),
-                    transition: 'all 0.7s ease', color: 'white', fontWeight: 800, overflow: 'hidden', cursor: editor && team ? 'pointer' : 'default'
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+                    ...(team ? { border: 'none' } : { borderRadius: C.ch * 0.1, borderWidth: compact ? 3 : 5, borderStyle: 'dashed', borderColor: '#4b5563', backgroundColor: 'rgba(8,12,28,0.45)' }),
+                    filter: team ? `${team.elim ? 'grayscale(1) ' : ''}${lit && playing ? 'drop-shadow(0 0 26px rgba(250,204,21,0.95)) drop-shadow(0 0 10px rgba(250,204,21,0.9))' : 'drop-shadow(0 4px 8px rgba(0,0,0,0.6))'}` : 'none',
+                    transform: lit && playing ? 'scale(1.08)' : 'scale(1)',
+                    opacity: hideForGhost ? 0.1 : (team && team.elim ? 0.4 : (dim ? 0.28 : 1)),
+                    transition: 'all 0.7s ease', color: 'white', fontWeight: 800, cursor: editor && team ? 'pointer' : 'default'
                 };
             };
             const cardInner = (team, seedLabel) => team ? (
                 <>
-                    <span style={{ position: 'absolute', left: C.ch * 0.05, top: C.ch * 0.03, fontSize: C.sf, lineHeight: 1, color: '#fbbf24', textShadow: '0 0 6px #000, 0 0 6px #000' }}>{team.seed || seedLabel}</span>
-                    <img src={`${imagePath}${team.logo}`} alt="" style={{ width: C.logo, height: C.logo, objectFit: 'contain', flexShrink: 0 }} />
-                    <span style={{ fontSize: C.f, lineHeight: 1.08, flex: 1, minWidth: 0, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', textDecoration: team.elim ? 'line-through' : 'none' }}>{team.name}</span>
+                    <img src={`${imagePath}${team.logo}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    <span style={{ position: 'absolute', left: 2, top: 0, fontSize: C.sf, lineHeight: 1, fontWeight: 900, color: '#fbbf24', textShadow: '0 0 6px #000, 0 0 6px #000, 0 0 10px #000' }}>{team.seed || seedLabel}</span>
                 </>
             ) : <span style={{ fontSize: C.sf, color: '#6b7280', width: '100%', textAlign: 'center' }}>{seedLabel}</span>;
 
@@ -871,12 +868,12 @@
                 const r = match.round, m = match.idx;
                 const src = [res.cols[r][2 * m], res.cols[r][2 * m + 1]];
                 const nodeY = yOf(r + 1, m);
-                const offs = [-(C.ch / 2 + 32), (C.ch / 2 + 32)];   // wider gap so the VS badge sits between the two cards
+                const offs = [-(C.ch / 2 + 20), (C.ch / 2 + 20)];   // wider gap so the VS badge sits between the two cards
                 src.forEach((team, k) => {
                     const sy = yOf(r, 2 * m + k);
                     ghosts.push(
                         <div key={`gh${k}`} style={{
-                            ...cardStyle(team, r, 2 * m + k), opacity: stage >= 2 ? 1 : 0, filter: 'none',
+                            ...cardStyle(team, r, 2 * m + k), opacity: stage >= 2 ? 1 : 0, filter: 'drop-shadow(0 0 26px rgba(250,204,21,0.95)) drop-shadow(0 0 10px rgba(250,204,21,0.9))',
                             left: moving ? xOf(r + 1, m) : xOf(r, 2 * m + k), top: (moving ? nodeY + offs[k] : sy) - C.ch / 2,
                             transform: 'scale(1.06)', transition: 'left 1.1s ease-in-out, top 1.1s ease-in-out, opacity 0.5s ease', zIndex: 5
                         }}>{cardInner(team, '')}</div>
